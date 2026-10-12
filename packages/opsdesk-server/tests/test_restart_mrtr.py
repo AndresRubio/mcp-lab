@@ -26,10 +26,24 @@ async def test_accepted_confirmation_restarts_the_service(
     assert store.service("search").restarts == 1
 
 
-async def test_declined_confirmation_leaves_the_service_alone(
-    server: MCPServer, store: OpsDeskStore, decline: ElicitationFnT
+async def _cancel(context: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
+    return ElicitResult(action="cancel")
+
+
+async def _accept_unconfirmed(context: ClientRequestContext, params: ElicitRequestParams) -> ElicitResult:
+    return ElicitResult(action="accept", content={"confirm": False})
+
+
+@pytest.mark.parametrize("answer", ["decline", "cancel", "accept_unconfirmed"])
+async def test_unconfirmed_answers_leave_the_service_alone(
+    server: MCPServer, store: OpsDeskStore, decline: ElicitationFnT, answer: str
 ) -> None:
-    async with Client(server, elicitation_callback=decline) as client:
+    callbacks: dict[str, ElicitationFnT] = {
+        "decline": decline,
+        "cancel": _cancel,
+        "accept_unconfirmed": _accept_unconfirmed,
+    }
+    async with Client(server, elicitation_callback=callbacks[answer]) as client:
         result = await client.call_tool("restart_service", {"service": "search"})
     assert result.structured_content == {"service": "search", "restarted": False, "state": "down"}
     assert store.service("search").restarts == 0
@@ -39,6 +53,7 @@ async def test_first_round_returns_input_required_then_retry_completes(
     server: MCPServer, decline: ElicitationFnT
 ) -> None:
     # Drive the MRTR loop by hand to see the wire-level shape.
+    # `decline` is passed only to declare the elicitation capability; it is never invoked.
     async with Client(server, elicitation_callback=decline) as client:
         first = await client.session.call_tool(
             "restart_service", {"service": "api"}, allow_input_required=True

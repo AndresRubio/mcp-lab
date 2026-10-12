@@ -24,10 +24,17 @@ def _free_port() -> int:
 @pytest.fixture(scope="module")
 def http_url() -> Iterator[str]:
     port = _free_port()
-    proc = subprocess.Popen([sys.executable, "-m", "opsdesk", "--transport", "http", "--port", str(port)])
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "opsdesk", "--transport", "http", "--port", str(port)],
+        stderr=subprocess.PIPE,
+        text=True,
+    )
     try:
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                stderr = proc.stderr.read() if proc.stderr else ""
+                raise RuntimeError(f"opsdesk HTTP server exited with code {proc.returncode}: {stderr}")
             try:
                 socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
                 break
@@ -38,7 +45,21 @@ def http_url() -> Iterator[str]:
         yield f"http://127.0.0.1:{port}/mcp"
     finally:
         proc.terminate()
-        proc.wait(timeout=5)
+        try:
+            proc.wait(5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+        if proc.stderr:
+            proc.stderr.close()
+
+
+def _tools_call_body(name: str) -> dict[str, Any]:
+    body = _tools_list_body()
+    body["method"] = "tools/call"
+    body["params"]["name"] = name
+    body["params"]["arguments"] = {"service": "api"} if name == "get_service_status" else {}
+    return body
 
 
 def _tools_list_body(version: str = PROTOCOL) -> dict[str, Any]:
@@ -89,3 +110,35 @@ def test_unsupported_version_is_rejected_with_32022_and_lists_supported(http_url
     error = response.json()["error"]
     assert error["code"] == -32022  # UnsupportedProtocolVersion
     assert PROTOCOL in error["data"]["supported"]
+
+
+@pytest.mark.parametrize(
+    ("body", "extra_headers"),
+    [
+        pytest.param(_tools_list_body(), {"Mcp-Method": "prompts/list"}, id="method-mismatch"),
+        pytest.param(_tools_call_body("get_service_status"), {"Mcp-Method": "tools/call"}, id="missing-name"),
+        pytest.param(
+            _tools_call_body("get_service_status"),
+            {"Mcp-Method": "tools/call", "Mcp-Name": "list_incidents"},
+            id="name-mismatch",
+        ),
+    ],
+)
+def test_header_rules_are_rejected_with_32020(
+    http_url: str, body: dict[str, Any], extra_headers: dict[str, str]
+) -> None:
+    headers = {"Accept": ACCEPT, "MCP-Protocol-Version": PROTOCOL, **extra_headers}
+    response = httpx2.post(http_url, json=body, headers=headers)
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == -32020  # HeaderMismatch
+
+
+def test_matching_method_and_name_headers_succeed(http_url: str) -> None:
+    headers = {
+        "Accept": ACCEPT,
+        "MCP-Protocol-Version": PROTOCOL,
+        "Mcp-Method": "tools/call",
+        "Mcp-Name": "get_service_status",
+    }
+    response = httpx2.post(http_url, json=_tools_call_body("get_service_status"), headers=headers)
+    assert response.status_code == 200

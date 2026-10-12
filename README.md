@@ -5,7 +5,7 @@ Targets **MCP spec 2026-07-28** (stateless MCP) while staying compatible with 20
 
 | Milestone | Status | What it shows |
 |---|---|---|
-| M1 OpsDesk server | ✅ `m1` | Official Python SDK v2, MRTR elicitation, `server/discover`, cache hints, `subscriptions/listen` |
+| M1 OpsDesk server | ✅ `m1` (Claude Code hookup unverified) | Official Python SDK v2, MRTR elicitation, `server/discover`, cache hints, `subscriptions/listen` |
 | M2 MCP gateway | planned | Registry (tools off by default), proxy, OAuth (CIMD), PII redaction, Omni discovery, OTel |
 | M3 Evals | planned | Tool-selection accuracy: direct vs discovery vs Code Mode |
 | M4 A2A agents | planned | Triage → Remediation delegation over A2A, tools via MCP |
@@ -27,7 +27,7 @@ claude mcp list
 ```
 
 Then ask "which services are down?" (it should call `get_service_status` or `list_incidents`) and
-"restart search" (Claude Code should ask you to confirm; that is the MRTR elicitation). Remove it
+"restart search" (Claude Code should ask you to confirm. On 2026-07-28 clients the confirmation arrives via MRTR: `input_required` plus a retry; a client that negotiates 2025-11-25 gets a standalone `elicitation/create` instead). Remove it
 afterwards with `claude mcp remove opsdesk`.
 
 > **Claude Code hookup status:** not yet verified end to end. The `claude mcp add` step was deliberately
@@ -52,7 +52,7 @@ afterwards with `claude mcp remove opsdesk`.
 |---|---|---|
 | Contract (in-memory) | `uv run pytest` | every tool/resource/prompt, MRTR rounds, error codes |
 | Transport | `uv run pytest -k transport` | stdio + Streamable HTTP, version negotiation, required headers |
-| Conformance | `./scripts/conformance.sh` | official suite (2025-11-25 scenarios; none exist yet for 2026-07-28) |
+| Conformance | `./scripts/conformance.sh` | official conformance suite (6 applicable 2025-11-25 scenarios; none exist yet for 2026-07-28) |
 | Smoke | `./scripts/inspector-smoke.sh` | MCP Inspector CLI over stdio |
 
 Notes for each milestone are in [`docs/notes/`](docs/notes/).

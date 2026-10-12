@@ -26,7 +26,8 @@ from opsdesk.data import (
 )
 
 # 2026-07-28 CacheableResult hints (SEP-2549). Catalogue listings change rarely and are the
-# same for every caller ("public"); resource reads are per-caller and short-lived ("private").
+# same for every caller ("public"). Runbooks change often (update_runbook), so reads get a short
+# TTL and "private" scope; M2's redaction may make them per-caller.
 CACHE_HINTS: dict[CacheableMethod, CacheHint] = {
     "tools/list": CacheHint(ttl_ms=60_000, scope="public"),
     "prompts/list": CacheHint(ttl_ms=60_000, scope="public"),
@@ -76,12 +77,12 @@ def build_server(store: OpsDeskStore | None = None) -> MCPServer:
             known = ", ".join(sorted(store.services))
             raise ToolError(f"Unknown service '{name}'. Known services: {known}.") from None
 
-    @server.tool(annotations=ToolAnnotations(read_only_hint=True))
+    @server.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     def list_incidents(status: IncidentStatus | None = None) -> IncidentList:
         """List incidents, optionally filtered by status ('open' or 'resolved')."""
         return IncidentList(incidents=store.list_incidents(status))
 
-    @server.tool(annotations=ToolAnnotations(read_only_hint=True))
+    @server.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     def get_service_status(service: str) -> Service:
         """Get the current state of a service (healthy, degraded or down)."""
         return require_service(service)
@@ -93,7 +94,9 @@ def build_server(store: OpsDeskStore | None = None) -> MCPServer:
         message = f"Restart '{service}' (currently {svc.state})? This interrupts traffic."
         return Elicit(message, RestartConfirmation)
 
-    @server.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+    @server.tool(
+        annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False, open_world_hint=False)
+    )
     def restart_service(
         service: str,
         confirmation: Annotated[ElicitationResult[RestartConfirmation], Resolve(confirm_restart)],
@@ -104,7 +107,7 @@ def build_server(store: OpsDeskStore | None = None) -> MCPServer:
             return RestartOutcome(service=service, restarted=True, state=svc.state)
         return RestartOutcome(service=service, restarted=False, state=require_service(service).state)
 
-    @server.tool(annotations=ToolAnnotations(read_only_hint=True))
+    @server.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     async def run_diagnostics(service: str, ctx: Context) -> DiagnosticsReport:
         """Run connectivity, error-rate and latency checks on a service, reporting progress."""
         svc = require_service(service)
@@ -115,7 +118,9 @@ def build_server(store: OpsDeskStore | None = None) -> MCPServer:
             checks.append(f"{check}: {verdict}")
         return DiagnosticsReport(service=service, state=svc.state, checks=checks)
 
-    @server.tool(annotations=ToolAnnotations(destructive_hint=False, idempotent_hint=True))
+    @server.tool(
+        annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=True, open_world_hint=False)
+    )
     async def update_runbook(service: str, markdown: str, ctx: Context) -> str:
         """Replace a service's runbook. Subscribers of runbook://{service} are notified."""
         require_service(service)

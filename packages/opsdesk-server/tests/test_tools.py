@@ -74,3 +74,11 @@ async def test_tools_are_listed_in_deterministic_order(server: MCPServer) -> Non
             "update_runbook",
         ]
     )
+
+
+async def test_all_tools_are_closed_world_and_update_runbook_is_destructive(server: MCPServer) -> None:
+    async with Client(server) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+    assert all(t.annotations is not None and t.annotations.open_world_hint is False for t in tools.values())
+    assert tools["update_runbook"].annotations is not None
+    assert tools["update_runbook"].annotations.destructive_hint is True
