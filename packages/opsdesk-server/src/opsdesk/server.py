@@ -4,9 +4,13 @@ No `from __future__ import annotations` here: MCPServer evaluates tool signature
 registered, and stringified annotations cannot see resolvers local to `build_server`.
 """
 
+from typing import Annotated
+
 from mcp.server.caching import CacheableMethod, CacheHint
+from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel
 
@@ -16,6 +20,7 @@ from opsdesk.data import (
     IncidentStatus,
     OpsDeskStore,
     Service,
+    ServiceState,
     UnknownServiceError,
     seed_store,
 )
@@ -32,6 +37,16 @@ CACHE_HINTS: dict[CacheableMethod, CacheHint] = {
 
 class IncidentList(BaseModel):
     incidents: list[Incident]
+
+
+class RestartConfirmation(BaseModel):
+    confirm: bool
+
+
+class RestartOutcome(BaseModel):
+    service: str
+    restarted: bool
+    state: ServiceState
 
 
 def build_server(store: OpsDeskStore | None = None) -> MCPServer:
@@ -61,5 +76,23 @@ def build_server(store: OpsDeskStore | None = None) -> MCPServer:
     def get_service_status(service: str) -> Service:
         """Get the current state of a service (healthy, degraded or down)."""
         return require_service(service)
+
+    def confirm_restart(service: str) -> Elicit[RestartConfirmation]:
+        # Resolver: runs before the tool body. Validating here means we never ask the user
+        # to confirm a restart of a service that does not exist.
+        svc = require_service(service)
+        message = f"Restart '{service}' (currently {svc.state})? This interrupts traffic."
+        return Elicit(message, RestartConfirmation)
+
+    @server.tool(annotations=ToolAnnotations(destructive_hint=True, idempotent_hint=False))
+    def restart_service(
+        service: str,
+        confirmation: Annotated[ElicitationResult[RestartConfirmation], Resolve(confirm_restart)],
+    ) -> RestartOutcome:
+        """Restart a service. The user is asked to confirm first (multi round-trip elicitation)."""
+        if isinstance(confirmation, AcceptedElicitation) and confirmation.data.confirm:
+            svc = store.restart(service)
+            return RestartOutcome(service=service, restarted=True, state=svc.state)
+        return RestartOutcome(service=service, restarted=False, state=require_service(service).state)
 
     return server

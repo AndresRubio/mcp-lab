@@ -48,3 +48,10 @@ async def test_unknown_service_is_a_tool_error_not_a_protocol_error(server: MCPS
     [content] = result.content
     assert isinstance(content, TextContent)
     assert "Unknown service 'nope'" in content.text
+
+
+async def test_restart_service_is_annotated_destructive(server: MCPServer) -> None:
+    async with Client(server) as client:
+        tools = {t.name: t for t in (await client.list_tools()).tools}
+    assert tools["restart_service"].annotations is not None
+    assert tools["restart_service"].annotations.destructive_hint is True
