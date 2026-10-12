@@ -133,4 +133,16 @@ def build_server(store: OpsDeskStore | None = None) -> MCPServer:
         except KeyError:
             raise ResourceNotFoundError(f"No runbook for service '{service}'.") from None
 
+    @server.prompt(title="Postmortem draft")
+    def postmortem(incident_id: str) -> str:
+        """Draft a blameless postmortem for an incident."""
+        incident = store.incident(incident_id)
+        if incident is None:
+            raise ValueError(f"Unknown incident '{incident_id}'.")
+        return (
+            f"Write a blameless postmortem for {incident.id} ({incident.title}) on service "
+            f"'{incident.service}'. Status: {incident.status}.\n\nContext: {incident.description}\n\n"
+            "Sections: Summary, Impact, Timeline, Root cause, Action items."
+        )
+
     return server
