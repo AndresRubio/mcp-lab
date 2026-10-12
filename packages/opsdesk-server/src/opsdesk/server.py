@@ -9,7 +9,7 @@ from typing import Annotated
 from mcp.server.caching import CacheableMethod, CacheHint
 from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
 from mcp.server.mcpserver import Context, MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel
@@ -114,5 +114,23 @@ def build_server(store: OpsDeskStore | None = None) -> MCPServer:
             await ctx.report_progress(step, len(DIAGNOSTIC_CHECKS), f"checking {check}")
             checks.append(f"{check}: {verdict}")
         return DiagnosticsReport(service=service, state=svc.state, checks=checks)
+
+    @server.tool(annotations=ToolAnnotations(destructive_hint=False, idempotent_hint=True))
+    async def update_runbook(service: str, markdown: str, ctx: Context) -> str:
+        """Replace a service's runbook. Subscribers of runbook://{service} are notified."""
+        require_service(service)
+        store.runbooks[service] = markdown
+        await ctx.notify_resource_updated(f"runbook://{service}")
+        return f"Runbook for '{service}' updated."
+
+    @server.resource(
+        "runbook://{service}", name="runbook", title="Service runbook", mime_type="text/markdown"
+    )
+    def runbook(service: str) -> str:
+        """Operational runbook for a service."""
+        try:
+            return store.runbooks[service]
+        except KeyError:
+            raise ResourceNotFoundError(f"No runbook for service '{service}'.") from None
 
     return server

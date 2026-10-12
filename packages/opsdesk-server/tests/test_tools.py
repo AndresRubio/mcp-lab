@@ -55,3 +55,22 @@ async def test_restart_service_is_annotated_destructive(server: MCPServer) -> No
         tools = {t.name: t for t in (await client.list_tools()).tools}
     assert tools["restart_service"].annotations is not None
     assert tools["restart_service"].annotations.destructive_hint is True
+
+
+async def test_tools_are_listed_in_deterministic_order(server: MCPServer) -> None:
+    # 2026-07-28: servers SHOULD return tools/list in a stable order (client and LLM prompt caching).
+    async with Client(server) as client:
+        first = [t.name for t in (await client.list_tools()).tools]
+    async with Client(server) as client:
+        second = [t.name for t in (await client.list_tools()).tools]
+    assert (
+        first
+        == second
+        == [
+            "list_incidents",
+            "get_service_status",
+            "restart_service",
+            "run_diagnostics",
+            "update_runbook",
+        ]
+    )
