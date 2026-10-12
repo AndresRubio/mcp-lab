@@ -3,6 +3,7 @@
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -24,34 +25,36 @@ def _free_port() -> int:
 @pytest.fixture(scope="module")
 def http_url() -> Iterator[str]:
     port = _free_port()
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "opsdesk", "--transport", "http", "--port", str(port)],
-        stderr=subprocess.PIPE,
-        text=True,
-    )
-    try:
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            if proc.poll() is not None:
-                stderr = proc.stderr.read() if proc.stderr else ""
-                raise RuntimeError(f"opsdesk HTTP server exited with code {proc.returncode}: {stderr}")
-            try:
-                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
-                break
-            except OSError:
-                time.sleep(0.1)
-        else:
-            raise RuntimeError("opsdesk HTTP server did not start")
-        yield f"http://127.0.0.1:{port}/mcp"
-    finally:
-        proc.terminate()
+    # stderr goes to a file, not a PIPE: an undrained pipe blocks the server once it fills.
+    with tempfile.TemporaryFile(mode="w+") as log:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "opsdesk", "--transport", "http", "--port", str(port)],
+            stderr=log,
+            text=True,
+        )
         try:
-            proc.wait(5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-        if proc.stderr:
-            proc.stderr.close()
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if proc.poll() is not None:
+                    log.seek(0)
+                    raise RuntimeError(
+                        f"opsdesk HTTP server exited with code {proc.returncode}: {log.read()}"
+                    )
+                try:
+                    socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                    break
+                except OSError:
+                    time.sleep(0.1)
+            else:
+                raise RuntimeError("opsdesk HTTP server did not start")
+            yield f"http://127.0.0.1:{port}/mcp"
+        finally:
+            proc.terminate()
+            try:
+                proc.wait(5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
 
 
 def _tools_call_body(name: str) -> dict[str, Any]:
