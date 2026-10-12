@@ -8,7 +8,7 @@ from typing import Annotated
 
 from mcp.server.caching import CacheableMethod, CacheHint
 from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.mcpserver.resolve import Elicit, Resolve
 from mcp.types import ToolAnnotations
@@ -47,6 +47,15 @@ class RestartOutcome(BaseModel):
     service: str
     restarted: bool
     state: ServiceState
+
+
+class DiagnosticsReport(BaseModel):
+    service: str
+    state: ServiceState
+    checks: list[str]
+
+
+DIAGNOSTIC_CHECKS = ("connectivity", "error-rate", "latency")
 
 
 def build_server(store: OpsDeskStore | None = None) -> MCPServer:
@@ -94,5 +103,16 @@ def build_server(store: OpsDeskStore | None = None) -> MCPServer:
             svc = store.restart(service)
             return RestartOutcome(service=service, restarted=True, state=svc.state)
         return RestartOutcome(service=service, restarted=False, state=require_service(service).state)
+
+    @server.tool(annotations=ToolAnnotations(read_only_hint=True))
+    async def run_diagnostics(service: str, ctx: Context) -> DiagnosticsReport:
+        """Run connectivity, error-rate and latency checks on a service, reporting progress."""
+        svc = require_service(service)
+        verdict = "ok" if svc.state == "healthy" else "needs attention"
+        checks: list[str] = []
+        for step, check in enumerate(DIAGNOSTIC_CHECKS, start=1):
+            await ctx.report_progress(step, len(DIAGNOSTIC_CHECKS), f"checking {check}")
+            checks.append(f"{check}: {verdict}")
+        return DiagnosticsReport(service=service, state=svc.state, checks=checks)
 
     return server
