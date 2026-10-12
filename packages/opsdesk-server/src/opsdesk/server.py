@@ -11,7 +11,8 @@ from mcp.server.elicitation import AcceptedElicitation, ElicitationResult
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError, ToolError
 from mcp.server.mcpserver.resolve import Elicit, Resolve
-from mcp.types import ToolAnnotations
+from mcp.shared.exceptions import MCPError
+from mcp.types import INVALID_PARAMS, ToolAnnotations
 from pydantic import BaseModel
 
 from opsdesk import __version__
@@ -143,7 +144,9 @@ def build_server(store: OpsDeskStore | None = None) -> MCPServer:
         """Draft a blameless postmortem for an incident."""
         incident = store.incident(incident_id)
         if incident is None:
-            raise ValueError(f"Unknown incident '{incident_id}'.")
+            # MCPError passes through unchanged; any other exception is masked as
+            # "Error rendering prompt". Bad prompt arguments are -32602 per the spec.
+            raise MCPError(code=INVALID_PARAMS, message=f"Unknown incident '{incident_id}'.")
         return (
             f"Write a blameless postmortem for {incident.id} ({incident.title}) on service "
             f"'{incident.service}'. Status: {incident.status}.\n\nContext: {incident.description}\n\n"

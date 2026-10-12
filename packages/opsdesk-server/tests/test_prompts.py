@@ -25,7 +25,8 @@ async def test_postmortem_prompt_embeds_incident_context(server: MCPServer) -> N
     assert "Root cause" in message.content.text
 
 
-async def test_unknown_incident_is_an_error(server: MCPServer) -> None:
+async def test_unknown_incident_is_invalid_params_32602(server: MCPServer) -> None:
     async with Client(server) as client:
-        with pytest.raises(MCPError):
+        with pytest.raises(MCPError, match="INC-404") as exc:
             await client.get_prompt("postmortem", {"incident_id": "INC-404"})
+    assert exc.value.error.code == -32602
