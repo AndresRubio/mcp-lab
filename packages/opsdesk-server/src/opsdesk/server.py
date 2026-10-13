@@ -110,7 +110,10 @@ def build_server(store: OpsDeskStore | None = None) -> MCPServer:
 
     @server.tool(annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
     async def run_diagnostics(service: str, ctx: Context) -> DiagnosticsReport:
-        """Run connectivity, error-rate and latency checks on a service, reporting progress."""
+        """Run connectivity, error-rate and latency checks on a service, reporting progress.
+
+        The checks are simulated: each verdict is derived from the service's current state.
+        """
         svc = require_service(service)
         verdict = "ok" if svc.state == "healthy" else "needs attention"
         checks: list[str] = []

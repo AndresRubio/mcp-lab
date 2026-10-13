@@ -21,8 +21,12 @@ async def test_postmortem_prompt_embeds_incident_context(server: MCPServer) -> N
     [message] = result.messages
     assert message.role == "user"
     assert isinstance(message.content, TextContent)
-    assert "INC-101" in message.content.text
-    assert "Root cause" in message.content.text
+    text = message.content.text
+    assert "INC-101" in text
+    assert "'api'" in text  # service
+    assert "Status: open." in text
+    assert "jane.doe@example.com" in text  # incident description (raw here; M2 redacts it)
+    assert "Root cause" in text
 
 
 async def test_unknown_incident_is_invalid_params_32602(server: MCPServer) -> None:

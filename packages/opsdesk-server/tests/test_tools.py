@@ -27,12 +27,22 @@ async def test_get_service_status_is_annotated_read_only(server: MCPServer) -> N
     assert tools["get_service_status"].annotations.read_only_hint is True
 
 
-async def test_list_incidents_filters_by_status(server: MCPServer) -> None:
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ({"status": "open"}, ["INC-101", "INC-102"]),
+        ({"status": "resolved"}, ["INC-099"]),
+        ({}, ["INC-101", "INC-102", "INC-099"]),
+    ],
+)
+async def test_list_incidents_filters_by_status(
+    server: MCPServer, arguments: dict[str, str], expected: list[str]
+) -> None:
     async with Client(server) as client:
-        result = await client.call_tool("list_incidents", {"status": "open"})
+        result = await client.call_tool("list_incidents", arguments)
     assert result.is_error is False
     assert result.structured_content is not None
-    assert [i["id"] for i in result.structured_content["incidents"]] == ["INC-101", "INC-102"]
+    assert [i["id"] for i in result.structured_content["incidents"]] == expected
 
 
 async def test_get_service_status_returns_structured_content(server: MCPServer) -> None:

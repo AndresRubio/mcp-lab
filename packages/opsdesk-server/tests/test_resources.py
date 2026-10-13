@@ -5,6 +5,8 @@ from mcp.server.mcpserver import MCPServer
 from mcp.shared.subscriptions import ResourceUpdated
 from mcp.types import TextResourceContents
 
+from opsdesk.data import OpsDeskStore
+
 pytestmark = pytest.mark.anyio
 
 
@@ -46,3 +48,13 @@ async def test_update_runbook_notifies_listeners_and_evicts_client_cache(server:
     assert isinstance(before.contents[0], TextResourceContents)
     assert isinstance(after.contents[0], TextResourceContents)
     assert before.contents[0].text != after.contents[0].text == "# api v2"
+
+
+async def test_update_runbook_for_unknown_service_changes_nothing(
+    server: MCPServer, store: OpsDeskStore
+) -> None:
+    before = dict(store.runbooks)
+    async with Client(server) as client:
+        result = await client.call_tool("update_runbook", {"service": "nope", "markdown": "# hijack"})
+    assert result.is_error is True
+    assert store.runbooks == before
