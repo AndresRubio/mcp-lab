@@ -1,0 +1,43 @@
+[project]
+name = "mcp-lab"
+version = "0.1.0"
+description = "A living lab for MCP 2026-07-28, agent protocols and how to test them"
+requires-python = ">=3.13"
+dependencies = [
+    "opsdesk-server",
+]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+opsdesk-server = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "anyio==4.15.1",
+    "httpx2==2.13.1",
+    "pyright==1.1.414",
+    "pytest==9.1.1",
+    "ruff==0.17.0",
+]
+
+[tool.ruff]
+line-length = 110
+target-version = "py313"
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["opsdesk"]
+
+[tool.pyright]
+pythonVersion = "3.13"
+include = ["packages"]
+strict = ["packages/opsdesk-server/src"]
+
+[tool.pytest.ini_options]
+testpaths = ["packages"]
+addopts = "-ra --strict-markers --import-mode=importlib"
