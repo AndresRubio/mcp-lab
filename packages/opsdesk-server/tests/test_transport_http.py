@@ -1,11 +1,12 @@
 """OpsDesk over Streamable HTTP, including raw requests that check 2026-07-28 wire rules."""
 
-import socket
+import re
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import httpx2
@@ -14,40 +15,32 @@ from mcp import Client
 
 PROTOCOL = "2026-07-28"
 ACCEPT = "application/json, text/event-stream"
+LISTENING = re.compile(r"OpsDesk listening on (http://\S+/mcp)")
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-@pytest.fixture(scope="module")
-def http_url() -> Iterator[str]:
-    port = _free_port()
+@contextmanager
+def _http_server(*args: str, timeout: float = 10) -> Iterator[str]:
+    """Start `opsdesk --transport http --port 0 [args]` and yield the URL it announces."""
     # stderr goes to a file, not a PIPE: an undrained pipe blocks the server once it fills.
     with tempfile.TemporaryFile(mode="w+") as log:
         proc = subprocess.Popen(
-            [sys.executable, "-m", "opsdesk", "--transport", "http", "--port", str(port)],
+            [sys.executable, "-m", "opsdesk", "--transport", "http", "--port", "0", *args],
             stderr=log,
             text=True,
         )
         try:
-            deadline = time.monotonic() + 10
-            while time.monotonic() < deadline:
-                if proc.poll() is not None:
-                    log.seek(0)
-                    raise RuntimeError(
-                        f"opsdesk HTTP server exited with code {proc.returncode}: {log.read()}"
-                    )
-                try:
-                    socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+            deadline = time.monotonic() + timeout
+            while True:
+                log.seek(0)
+                output = log.read()
+                if match := LISTENING.search(output):
                     break
-                except OSError:
-                    time.sleep(0.1)
-            else:
-                raise RuntimeError("opsdesk HTTP server did not start")
-            yield f"http://127.0.0.1:{port}/mcp"
+                if proc.poll() is not None:
+                    raise RuntimeError(f"opsdesk HTTP server exited with code {proc.returncode}: {output}")
+                if time.monotonic() > deadline:
+                    raise RuntimeError(f"opsdesk HTTP server did not start: {output}")
+                time.sleep(0.05)
+            yield match.group(1)
         finally:
             proc.terminate()
             try:
@@ -55,6 +48,17 @@ def http_url() -> Iterator[str]:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
+
+
+@pytest.fixture(scope="module")
+def http_url() -> Iterator[str]:
+    with _http_server() as url:
+        yield url
+
+
+def test_server_start_failure_is_reported_with_exit_code() -> None:
+    with pytest.raises(RuntimeError, match=r"exited with code [1-9]"), _http_server("--host", "256.0.0.1"):
+        pass
 
 
 def _tools_call_body(name: str) -> dict[str, Any]:
@@ -87,6 +91,13 @@ async def test_modern_and_legacy_clients_both_work_over_http(http_url: str) -> N
     async with Client(http_url, mode="legacy") as legacy:
         assert legacy.protocol_version == "2025-11-25"
         assert len((await legacy.list_tools()).tools) == 5
+
+
+@pytest.mark.anyio
+async def test_server_discover_over_http(http_url: str) -> None:
+    async with Client(http_url) as client:
+        discovered = await client.session.discover()
+    assert PROTOCOL in discovered.supported_versions
 
 
 def test_stateless_request_with_required_headers_succeeds(http_url: str) -> None:
