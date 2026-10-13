@@ -85,6 +85,13 @@ Done when:
 
 ## M2 — Production MCP (`mcp-gateway`)
 
+> **Split (2026-10-14):** M2 is delivered as three plans, each shippable on its own:
+> - **M2a, gateway core:** registry (tools off by default, hot reload), proxy per server, OpenAPI backend, PII redaction, per-caller rate limits. Plan: `docs/superpowers/plans/2026-10-14-m2a-gateway-core.md`.
+> - **M2b, auth:** OAuth 2.1, CIMD, `iss` validation, per-server/per-tool access.
+> - **M2c, scale and observability:** Omni mode, response projection, OTel to Jaeger.
+>
+> Found while researching FastMCP 4.1.0: the proxy does not forward `subscriptions/listen` or upstream cache hints, and it has no built-in "Omni" or projection feature. M2a pins the first two as known gaps with characterization tests; M2c builds Omni and projection itself.
+
 Built on FastMCP 4. It fronts OpsDesk plus one server generated from an OpenAPI spec.
 
 - **Registry (control plane):** a YAML or SQLite file listing servers and tools with owner and on/off state. New tools start **switched off**, and turning one on is a reviewed config change.
