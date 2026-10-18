@@ -164,3 +164,14 @@ def test_initial_load_failure_raises(tmp_path: Path) -> None:
         RegistryHolder(path)
     with pytest.raises(RegistryError, match=r"missing\.yaml"):
         RegistryHolder(tmp_path / "missing.yaml")
+
+
+def test_non_utf8_reload_keeps_last_good_registry(write_registry: WriteRegistry, registry_path: Path) -> None:
+    holder = RegistryHolder(write_registry({"servers": {"opsdesk": OPSDESK}}))
+    good = holder.current
+    registry_path.write_bytes(b"\xff\xfe\x00")
+    stamp = registry_path.stat().st_mtime_ns + 1_000_000_000
+    os.utime(registry_path, ns=(stamp, stamp))
+    assert holder.refresh() is False
+    assert holder.current is good
+    assert holder.last_error is not None

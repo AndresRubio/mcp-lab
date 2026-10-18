@@ -75,9 +75,9 @@ class RegistryError(ValueError):
 
 def load_registry(path: Path) -> Registry:
     try:
-        data = yaml.safe_load(path.read_text())
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
         return Registry.model_validate(data)
-    except (OSError, yaml.YAMLError, ValidationError) as err:
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, ValidationError) as err:
         raise RegistryError(f"{path}: {err}") from err
 
 
