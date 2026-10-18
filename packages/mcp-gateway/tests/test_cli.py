@@ -1,0 +1,138 @@
+"""The `mcp-gateway` CLI: `audit` in-process, and `serve` end to end as a real subprocess."""
+
+import os
+import re
+import sys
+import time
+from collections.abc import Callable
+from contextlib import AbstractContextManager
+from pathlib import Path
+from typing import Any
+
+import anyio
+import httpx2
+import mcp_types as mt
+import pytest
+import yaml
+from mcp import Client
+from mcp.client.session import ClientRequestContext
+
+from gateway.__main__ import audit, main
+from gateway.app import ResolvedTargets, resolve_targets
+from gateway.registry import Registry, load_registry
+
+Announced = Callable[..., AbstractContextManager[re.Match[str]]]
+WriteRegistry = Callable[[Any], Path]
+
+DEMO_REGISTRY = Path(__file__).resolve().parents[1] / "registry.yaml"
+OPSDESK_STDIO = [sys.executable, "-m", "opsdesk"]
+
+
+async def _accept(context: ClientRequestContext, params: mt.ElicitRequestParams) -> mt.ElicitResult:
+    return mt.ElicitResult(action="accept", content={"confirm": True})
+
+
+def _stdio_registry(registry_data: dict[str, Any]) -> dict[str, Any]:
+    """The test registry with OpsDesk launched from this interpreter and the Pager dropped."""
+    opsdesk = registry_data["servers"]["opsdesk"]
+    opsdesk["source"]["command"] = OPSDESK_STDIO
+    return {"servers": {"opsdesk": opsdesk}}
+
+
+def test_demo_registry_matches_the_walkthrough() -> None:
+    registry = load_registry(DEMO_REGISTRY)
+    opsdesk, pager = registry.servers["opsdesk"], registry.servers["pager"]
+    assert opsdesk.source.kind == "stdio"
+    assert opsdesk.tools["update_runbook"].enabled is False
+    assert "run_diagnostics" not in opsdesk.tools
+    assert pager.source.kind == "openapi"
+    assert pager.is_enabled("send_page")
+
+
+# capfd, not capsys: the stdio backend inherits stderr, which needs a real file descriptor.
+def test_audit_reports_unlisted_backend_tools(
+    write_registry: WriteRegistry, registry_data: dict[str, Any], capfd: pytest.CaptureFixture[str]
+) -> None:
+    data = _stdio_registry(registry_data)
+    del data["servers"]["opsdesk"]["tools"]["run_diagnostics"]
+    data["servers"]["down"] = {"owner": "nobody", "source": {"kind": "http", "url": "http://127.0.0.1:9/mcp"}}
+    main(["audit", "--registry", str(write_registry(data))])
+    lines = capfd.readouterr().out.splitlines()
+    assert "opsdesk (owner: oncall-team): pending review: run_diagnostics" in lines
+    assert any(re.fullmatch(r"down \(owner: nobody\): unreachable: .+", line) for line in lines)
+
+
+def test_audit_of_the_demo_registry(capfd: pytest.CaptureFixture[str]) -> None:
+    main(["audit", "--registry", str(DEMO_REGISTRY)])
+    assert capfd.readouterr().out.splitlines() == [
+        "opsdesk (owner: oncall-team): pending review: run_diagnostics",
+        "pager (owner: sre): every tool is reviewed",
+    ]
+
+
+@pytest.mark.anyio
+async def test_serve_end_to_end_over_a_stdio_backend(
+    announced: Announced, write_registry: WriteRegistry, registry_data: dict[str, Any]
+) -> None:
+    path = write_registry(_stdio_registry(registry_data))
+    command = [sys.executable, "-m", "gateway", "serve", "--registry", str(path), "--port", "0"]
+    with announced(command, r"Gateway listening on (http://\S+)\n\s+opsdesk: (http://\S+/opsdesk/mcp)") as m:
+        base, url = m.group(1), m.group(2)
+        health = httpx2.get(f"{base}/healthz")
+        async with Client(url, elicitation_callback=_accept) as client:
+            assert client.protocol_version == "2026-07-28"
+            tools = {t.name for t in (await client.list_tools()).tools}
+            first = await client.call_tool("restart_service", {"service": "search"})
+            again = await client.call_tool("get_service_status", {"service": "search"})
+    assert health.json() == {"status": "ok", "servers": ["opsdesk"]}
+    assert tools == {"list_incidents", "get_service_status", "restart_service", "run_diagnostics"}
+    assert first.structured_content == {"service": "search", "restarted": True, "state": "healthy"}
+    # One backend process serves every round and every call (stdio keep_alive=True).
+    assert again.structured_content == {"name": "search", "state": "healthy", "restarts": 1}
+
+
+def test_serve_refuses_an_invalid_registry(tmp_path: Path) -> None:
+    path = tmp_path / "registry.yaml"
+    path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}))
+    with pytest.raises(SystemExit, match=r"registry\.yaml"):
+        main(["serve", "--registry", str(path), "--port", "0"])
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+@pytest.mark.anyio
+async def test_audit_leaves_no_backend_process_behind(
+    write_registry: WriteRegistry,
+    registry_data: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The transport exposes no public pid, so the backend records its own before serving.
+    pid_file = tmp_path / "pid"
+    boot = (
+        f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "from opsdesk.__main__ import main; main([])"
+    )
+    data = _stdio_registry(registry_data)
+    data["servers"]["opsdesk"]["source"]["command"] = [sys.executable, "-c", boot]
+    # Hold the targets so garbage collection cannot stop the backend for `audit`: only `aclose` may.
+    held: list[ResolvedTargets] = []
+
+    def resolve_and_hold(registry: Registry) -> ResolvedTargets:
+        held.append(resolve_targets(registry))
+        return held[-1]
+
+    monkeypatch.setattr("gateway.__main__.resolve_targets", resolve_and_hold)
+    # Run in this event loop: tearing a loop down would reap a leaked backend and hide the leak.
+    await audit(write_registry(data))
+    pid = int(pid_file.read_text())
+    deadline = time.monotonic() + 10
+    while _alive(pid) and time.monotonic() < deadline:
+        await anyio.sleep(0.05)
+    assert not _alive(pid)
