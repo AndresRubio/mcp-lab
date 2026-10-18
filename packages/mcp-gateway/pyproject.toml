@@ -1,0 +1,32 @@
+[project]
+name = "mcp-gateway"
+version = "0.1.0"
+description = "An MCP gateway: registry-governed proxy with redaction and per-caller rate limits"
+requires-python = ">=3.13"
+dependencies = [
+    "fastmcp==4.1.0",
+    "httpx2==2.13.1",
+    "mcp==2.3.0",
+    "pydantic==2.14.1",
+    "pyyaml==6.0.3",
+    "starlette==1.8.0",
+    "uvicorn==0.54.0",
+]
+
+[project.scripts]
+mcp-gateway = "gateway.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "gateway"
+
+[tool.uv.sources]
+opsdesk-server = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "opsdesk-server",
+]
