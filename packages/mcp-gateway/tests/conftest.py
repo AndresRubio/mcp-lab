@@ -58,15 +58,16 @@ async def pager_http() -> AsyncIterator[httpx2.AsyncClient]:
 def _announced(args: list[str], pattern: str, timeout: float = 20) -> Iterator[re.Match[str]]:
     """Run `args`, wait until its stderr matches `pattern`, yield the match, then stop it.
 
-    stderr goes to a file, not a PIPE: an undrained pipe blocks the child once it fills.
+    stderr goes to a file, not a PIPE: an undrained pipe blocks the child once it fills. The parent
+    reads through its own handle, so it never moves the child's write offset.
     """
-    with tempfile.TemporaryFile(mode="w+") as log:
-        proc = subprocess.Popen(args, stderr=log, stdout=subprocess.DEVNULL, text=True)
+    with tempfile.NamedTemporaryFile(mode="w") as out, open(out.name) as log:
+        proc = subprocess.Popen(args, stderr=out, stdout=subprocess.DEVNULL, text=True)
         try:
             deadline = time.monotonic() + timeout
+            output = ""
             while True:
-                log.seek(0)
-                output = log.read()
+                output += log.read()
                 if match := re.search(pattern, output):
                     break
                 if proc.poll() is not None:

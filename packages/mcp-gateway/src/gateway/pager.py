@@ -8,7 +8,7 @@ Run it with `python -m gateway.pager --port 8100`.
 import argparse
 import socket
 import sys
-from typing import Any
+from typing import Any, cast
 
 import httpx2
 import uvicorn
@@ -32,6 +32,11 @@ _ONCALL: dict[str, Any] = {
     "type": "object",
     "properties": {"service": _STRING, "primary": _STRING, "secondary": _STRING},
     "required": ["service", "primary", "secondary"],
+}
+_DETAIL: dict[str, Any] = {
+    "type": "object",
+    "properties": {"detail": _STRING},
+    "required": ["detail"],
 }
 _NEW_PAGE: dict[str, Any] = {
     "type": "object",
@@ -58,7 +63,10 @@ SPEC: dict[str, Any] = {
                 ],
                 "responses": {
                     "200": {"description": "The rota", "content": {"application/json": {"schema": _ONCALL}}},
-                    "404": {"description": "No rota for that service"},
+                    "404": {
+                        "description": "No rota for that service",
+                        "content": {"application/json": {"schema": _DETAIL}},
+                    },
                 },
             }
         },
@@ -78,7 +86,15 @@ SPEC: dict[str, Any] = {
                 "summary": "Page the on-call engineer for a service.",
                 "requestBody": {"required": True, "content": {"application/json": {"schema": _NEW_PAGE}}},
                 "responses": {
-                    "201": {"description": "The page", "content": {"application/json": {"schema": _PAGE}}}
+                    "201": {"description": "The page", "content": {"application/json": {"schema": _PAGE}}},
+                    "404": {
+                        "description": "No rota for that service",
+                        "content": {"application/json": {"schema": _DETAIL}},
+                    },
+                    "422": {
+                        "description": "The body is not a JSON object with string service and message",
+                        "content": {"application/json": {"schema": _DETAIL}},
+                    },
                 },
             },
         },
@@ -101,8 +117,20 @@ def create_pager_app() -> Starlette:
         return JSONResponse(pages)
 
     async def create_page(request: Request) -> JSONResponse:
-        body = await request.json()
-        page = {"id": len(pages) + 1, "service": str(body["service"]), "message": str(body["message"])}
+        try:
+            body: Any = await request.json()
+        except ValueError:
+            return JSONResponse({"detail": "The body is not valid JSON."}, status_code=422)
+        if not isinstance(body, dict):
+            return JSONResponse({"detail": "The body must be a JSON object."}, status_code=422)
+        fields = cast(dict[str, Any], body)
+        for key in ("service", "message"):
+            if not isinstance(fields.get(key), str):
+                return JSONResponse({"detail": f"'{key}' is required and must be a string."}, status_code=422)
+        service, message = str(fields["service"]), str(fields["message"])
+        if service not in ROTA:
+            return JSONResponse({"detail": f"No rota for service '{service}'."}, status_code=404)
+        page = {"id": len(pages) + 1, "service": service, "message": message}
         pages.append(page)
         return JSONResponse(page, status_code=201)
 

@@ -2,10 +2,13 @@ import re
 import sys
 from collections.abc import Callable
 from contextlib import AbstractContextManager
+from typing import Any
 
 import httpx2
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
+from starlette.routing import Route
 
 from gateway.pager import MCP_NAMES, SPEC, create_pager_app, pager_mcp
 
@@ -79,3 +82,57 @@ def test_cli_binds_then_announces_and_serves(announced: Announced) -> None:
         response = httpx2.get(f"{m.group(1)}/oncall/search")
     assert response.status_code == 200
     assert response.json()["service"] == "search"
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "status"),
+    [
+        ({"content": b"not json"}, 422),
+        ({"json": {}}, 422),
+        ({"json": {"service": "api"}}, 422),
+        ({"json": {"service": "api", "message": 5}}, 422),
+        ({"json": {"service": None, "message": "x"}}, 422),
+        ({"json": ["api", "x"]}, 422),
+        ({"json": {"service": "nope", "message": "x"}}, 404),
+    ],
+)
+async def test_bad_page_requests_get_a_detail_and_create_nothing(
+    pager_http: httpx2.AsyncClient, kwargs: dict[str, Any], status: int
+) -> None:
+    response = await pager_http.post("/pages", **kwargs)
+    assert response.status_code == status
+    assert isinstance(response.json()["detail"], str)
+    assert (await pager_http.get("/pages")).json() == []
+
+
+async def test_send_page_with_a_missing_argument_is_an_error_and_creates_no_page(
+    pager_http: httpx2.AsyncClient,
+) -> None:
+    async with Client(pager_mcp(pager_http)) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool("send_page", {"service": "api"})
+    assert (await pager_http.get("/pages")).json() == []
+
+
+async def test_oncall_for_an_unknown_service_is_an_error(pager_http: httpx2.AsyncClient) -> None:
+    async with Client(pager_mcp(pager_http)) as client:
+        with pytest.raises(ToolError):
+            await client.call_tool("oncall_for", {"service": "nope"})
+
+
+async def test_spec_matches_the_routes_and_success_statuses(pager_http: httpx2.AsyncClient) -> None:
+    documented = {(m.upper(), path) for path, ops in SPEC["paths"].items() for m in ops}
+    actual = {
+        (m, route.path)
+        for route in create_pager_app().routes
+        if isinstance(route, Route)
+        for m in (route.methods or set())
+        if m != "HEAD"
+    }
+    assert documented == actual
+    get = await pager_http.get("/oncall/api")
+    post = await pager_http.post("/pages", json={"service": "api", "message": "x"})
+    listing = await pager_http.get("/pages")
+    assert str(get.status_code) in SPEC["paths"]["/oncall/{service}"]["get"]["responses"]
+    assert str(post.status_code) in SPEC["paths"]["/pages"]["post"]["responses"]
+    assert str(listing.status_code) in SPEC["paths"]["/pages"]["get"]["responses"]
