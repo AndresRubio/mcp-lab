@@ -1,17 +1,25 @@
-"""PII redaction for everything the gateway returns: a pure function over JSON-shaped values.
+"""PII (personally identifiable information) redaction: a pure function over JSON-shaped values.
+
+The gateway applies it to tool results, resource reads and prompts (see `gateway.policies`).
 
 E-mail matching rules:
 
-- Local part: the whole run of RFC 5322 atext characters (letters, digits, `!#$%&'*+/=?^_`{|}~-`,
-  Unicode letters through `\\w`) and dots that ends at the `@`. The run is matched from its start, so the
-  regex never starts inside it, which keeps matching linear. A run longer than the RFC's 64 characters is
-  still redacted in full, and so are atext neighbours such as `?to=` in `?to=jane@example.com`: the
-  redaction errs toward hiding too much of the local part.
-- Domain: one or more labels of 1-63 word characters or hyphens, each followed by a dot, then a TLD of
-  2-63 letters with no digits. Version specs such as `lodash@4.17.21` are therefore left alone.
+- Local part: the whole run of RFC 5322 (Internet Message Format) atext characters (letters, digits,
+  `!#$%&'*+/=?^_`{|}~-`, Unicode letters through `\\w`) and dots that ends at the `@`. The run is matched
+  from its start, so the regex never starts inside it, which keeps matching linear. A run longer than the
+  RFC's 64 characters is still redacted in full, and so are atext neighbours such as `?to=` in
+  `?to=jane@example.com`: the redaction errs toward hiding too much of the local part.
+- Domain: one or more labels of 1-63 word characters or hyphens, each followed by a dot, then a top-level
+  domain (TLD) of 2-63 letters with no digits. Version specs such as `lodash@4.17.21` are therefore left
+  alone.
 
-Out of scope: IP-literal domains (`user@[10.0.0.1]`), dotless hosts (`user@localhost`), quoted local
-parts, labels longer than 63 characters, and percent-encoded `@` (`user%40example.com`).
+Out of scope:
+
+- IP-literal domains (`user@[10.0.0.1]`) and dotless hosts (`user@localhost`).
+- Quoted local parts, labels longer than 63 characters, and percent-encoded `@` (`user%40example.com`).
+- Punycode TLD tails: in `jane@example.xn--p1ai` the TLD match stops at `xn`, so `--p1ai` stays visible.
+- TLDs glued to digits: `jane@example.com2` keeps the trailing `2`, and `jane@example.c0m` is not
+  redacted at all.
 
 `redact` recurses through str, dict values and list items. Dict keys are schema, not data, so the plan
 leaves them alone. Tuples, sets and other containers are not recursed: the input is assumed JSON-shaped.

@@ -1,4 +1,5 @@
-"""Per-request gateway policy: live registry refresh, PII redaction and per-caller rate limits."""
+"""Per-request gateway policy: live registry refresh, PII (personally identifiable information)
+redaction of results, resource reads and prompts, and per-caller rate limits."""
 
 import time
 from collections.abc import Callable
@@ -50,10 +51,14 @@ class GatewayPolicyMiddleware(Middleware):
     - Redacts e-mail addresses in tool results (text and structured content), resource reads, and
       prompt messages and descriptions. Inside content blocks that covers `TextContent`, the text and
       URI of an `EmbeddedResource` holding `TextResourceContents`, and a `ResourceLink`'s name,
-      title, description and URI. `InputRequired*` results are MRTR legs with nothing to redact:
-      they pass through untouched, or the front client would never see the question.
-    - Not redacted: `meta` fields, blob resources, list results (tools, resources, prompts),
-      completions, and JSON-RPC error messages coming back from a backend.
+      title, description and URI.
+    - `InputRequired*` results (MRTR legs) pass through untouched, so the elicitation questions they
+      carry reach the client unredacted. Redacting a question would hide what the user is asked to
+      confirm, so this gap is deliberate.
+    - Not redacted: elicitation questions in both eras (2026 `input_requests[...].params.message` and
+      the legacy `elicitation/create` push), `notifications/message` log data, progress messages,
+      `ResourceLink` icons and annotations, `meta` on results and blocks, blob resources, list results
+      (tools, resources, prompts), completions, and JSON-RPC error messages coming back from a backend.
     - Limits each caller to `rate_limit.calls_per_minute` executed tool calls per fixed one-minute
       window. Every round is checked: a call is rejected once the caller's count for the current
       window has reached the limit. A slot is reserved before the call is forwarded, so concurrent
@@ -138,7 +143,11 @@ class GatewayPolicyMiddleware(Middleware):
         )
 
     def call_counts(self) -> dict[str, int]:
-        """A copy of the calls counted per caller in the current window."""
+        """A copy of the calls counted per caller in the last window a rate-limited call saw.
+
+        The window only rolls over when a rate-limited call arrives, so after an idle minute this
+        still reports the last-seen window's counts until the next such call clears them.
+        """
         return dict(self._calls)
 
     def _current_window(self) -> int:

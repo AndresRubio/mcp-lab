@@ -5,10 +5,10 @@ Targets **MCP spec 2026-07-28** (stateless MCP) while staying compatible with 20
 
 | Milestone | Status | What it shows |
 |---|---|---|
-| M1 OpsDesk server | ✅ `m1` (Claude Code hookup unverified) | Official Python SDK v2, MRTR elicitation, `server/discover`, cache hints, `subscriptions/listen` |
-| M2a MCP gateway core | ✅ `m2a` | FastMCP 4.1 proxy per backend, YAML registry (tools off by default, hot reload), PII redaction, per-caller rate limits, OpenAPI backend |
-| M2b MCP gateway auth | planned | OAuth 2.1 with a local auth server, CIMD clients, `iss` validation, per-server/per-tool access, token-subject callers |
-| M2c MCP gateway scale & observability | planned | Omni discovery meta-tools, response projection, OTel traces to Jaeger |
+| M1 OpsDesk server | ✅ `m1` (Claude Code hookup unverified) | Official Python SDK v2, MRTR (multi round-trip request) elicitation, `server/discover`, cache hints, `subscriptions/listen` |
+| M2a MCP gateway core | ✅ `m2a` | FastMCP 4.1 proxy per backend, YAML registry (tools off by default, hot reload), PII (personally identifiable information) redaction of results, resource reads and prompts, per-caller rate limits, OpenAPI backend |
+| M2b MCP gateway auth | planned | OAuth (Open Authorization) 2.1 with a local auth server, CIMD (Client ID Metadata Documents) clients, `iss` validation, per-server/per-tool access, token-subject callers |
+| M2c MCP gateway scale & observability | planned | Omni discovery meta-tools, response projection, OTel (OpenTelemetry) traces to Jaeger |
 | M3 Evals | planned | Tool-selection accuracy: direct vs discovery vs Code Mode |
 | M4 A2A agents | planned | Triage → Remediation delegation over A2A, tools via MCP |
 | M5 UI | planned | AG-UI approval flow, MCP App dashboard |
@@ -97,9 +97,15 @@ EOF
 
 Registry edits apply on the next request, with no restart: replace the `# run_diagnostics is
 deliberately unlisted` comment with `run_diagnostics: {enabled: true, owner: oncall-team}` and run
-the snippet again; `run_diagnostics` is now listed. Adding or removing a server needs a restart.
-The registry governs tools only: resources and prompts pass through ungoverned (they are still
-redacted). See [`docs/notes/m2a.md`](docs/notes/m2a.md) for the design and its known gaps.
+the snippet again; `run_diagnostics` is now listed. Adding or removing a server, or changing a
+server's `source`, needs a restart, and the gateway logs a warning when a reload contains such an
+edit. The registry governs tools only: resources and prompts pass through ungoverned (they are still
+redacted). Redaction covers results, resource reads and prompts. Elicitation questions, log
+notifications and progress messages pass through unredacted.
+
+Treat the registry as code: a `stdio` source's `command` and an OpenAPI `module:ATTR` spec run code
+the operator names. `GET /healthz` is unauthenticated and lists the server names, which M2b will
+revisit. See [`docs/notes/m2a.md`](docs/notes/m2a.md) for the design and its known gaps.
 
 ## Test pyramid
 

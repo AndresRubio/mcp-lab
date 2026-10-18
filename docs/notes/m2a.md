@@ -2,7 +2,8 @@
 
 ## The one-line version
 One endpoint per backend (`/<name>/mcp`), each a FastMCP 4.1 proxy. A reviewed YAML registry decides
-which tools exist, and middleware redacts e-mail addresses and rate-limits each caller.
+which tools exist, and middleware redacts e-mail addresses in results, resource reads and prompts,
+and rate-limits each caller.
 
 ## Control plane and data plane
 - The control plane is `registry.yaml`, parsed into pydantic models by `gateway.registry`. It records
@@ -12,6 +13,9 @@ which tools exist, and middleware redacts e-mail addresses and rate-limits each 
 - The data plane is `create_proxy(target)` per backend, plus a `RegistryVisibility` transform and a
   `GatewayPolicyMiddleware`, all mounted in one Starlette app (`gateway.app`). It only reads the
   control plane, through `RegistryHolder.current`.
+- The registry is trusted config, equivalent to code: a `stdio` source's `command` and an OpenAPI
+  `module:ATTR` spec both run code the operator names, so a registry edit needs the same review as a
+  code change.
 - `mcp-gateway audit` connects to every backend and prints the tools the registry does not list
   ("pending review"). That is how a newly shipped tool reaches a reviewer
   (`test_audit_reports_unlisted_backend_tools`).
@@ -41,8 +45,10 @@ everything else (see below), but a reviewer sees nothing about them.
   Toggling a tool ten times would stack ten transforms.
 - A transform also hides the tool from `get_tool`, which the call path and any catalog or search
   transform use. Middleware would only filter the wire methods.
-- Live: tool enablement, owners and rate limits. Restart needed: adding or removing servers, because
-  each server is a mounted sub-app with its own lifespan, built at startup.
+- Live: tool enablement, owners and rate limits. Restart needed: adding or removing a server, or
+  changing a server's `source`, because each server is a mounted sub-app with its own lifespan, built
+  at startup. A reload that makes such an edit still installs the new registry, and logs a WARNING
+  naming the servers and saying a restart is needed (`test_restart_only_edits_log_a_warning`).
 
 ## Shutdown
 `resolve_targets` returns a `ResolvedTargets` (a dict of proxy targets) with an `aclose()` method that
@@ -51,9 +57,8 @@ on_shutdown=targets.aclose)` runs it after every mounted app's lifespan has exit
 and `audit` pass it (`test_shutdown_stops_the_stdio_backend_and_closes_the_http_client`,
 `test_aclose_closes_the_http_client_and_is_idempotent`, `test_audit_leaves_no_backend_process_behind`).
 
-## MRTR through a proxy
-MRTR is the multi round-trip request: a tool answers `input_required` and the client retries the call
-with its answers.
+## MRTR (multi round-trip requests) through a proxy
+In an MRTR exchange a tool answers `input_required` and the client retries the call with its answers.
 
 - `create_proxy` makes each backend request mirror the front client's era. A hand-built `ProxyClient`
   defaults to the legacy era, and then a 2026-07-28 front breaks: the backend tries to push
@@ -93,7 +98,11 @@ with its answers.
 - The reservation happens in one synchronous step, with no `await` between the check and the
   increment, so concurrent replays cannot all pass the check
   (`test_concurrent_replays_cannot_race_past_the_rate_limit`).
-- Replay inside the limit is still possible. The limit caps how often it can happen, not whether.
+- Replay inside the limit is still possible. The limit caps how often it can happen.
+- An earlier design counted only calls without `requestState`, so that the first round of an exchange
+  paid for it. Replay broke it: a sealed `requestState` stays valid for 600 seconds and is not bound
+  to the caller, so a client could resend the executing round any number of times and never be
+  counted.
 - Rounds that end in `InputRequiredToolResult` are checked but never counted, so a caller below the
   limit can make any number of them. Results with `is_error=True` and calls that raise still count,
   because the call reached the backend (`test_calls_that_fail_at_the_backend_still_count`).
@@ -107,10 +116,13 @@ with its answers.
 - Calls to hidden or unknown tools count too, because the limit applies before the tool is resolved.
 - Counters live in process memory. They reset on restart and are not shared between replicas.
 - The caller identity is the self-asserted `clientInfo.name`, so a client can pick any name and get
-  its own budget. M2b replaces it with the subject of a verified OAuth token.
+  its own budget (`test_rate_limits_are_per_caller_over_http` shows two names with separate budgets).
+  M2b replaces it with the subject of a verified OAuth (Open Authorization) token.
 
 ## Redaction scope
-`redact()` replaces e-mail addresses with `[REDACTED:email]` in strings, dict values and list items.
+The gateway's PII (personally identifiable information) redaction covers results, resource reads and
+prompts. `redact()` replaces e-mail addresses with `[REDACTED:email]` in strings, dict values and list
+items.
 
 Redacted:
 - tool results: text blocks, `structuredContent` (so the client's typed `.data` is redacted too),
@@ -125,18 +137,35 @@ Redacted:
 Both backends are covered: OpsDesk (MCP over stdio) and Pager (OpenAPI over HTTP,
 `test_openapi_backend_results_are_redacted`).
 
-Not redacted: `meta` fields, list results (tools, resources, prompts), completions, blob resources,
-dict keys, image and audio blocks, anything the client sends, and JSON-RPC error messages that come
-back from a backend.
+Not redacted:
+- elicitation questions in both eras: the 2026 `input_requests[...].params.message` of an
+  `InputRequired*` result, and the legacy `elicitation/create` push;
+- `notifications/message` log data and progress messages;
+- `ResourceLink` icons and annotations, and `meta` on results and content blocks;
+- list results (tools, resources, prompts), completions, blob resources, dict keys, image and audio
+  blocks, anything the client sends, and JSON-RPC error messages that come back from a backend.
 
-`InputRequired*` results pass through untouched. Their content is empty, and rebuilding them as a
-plain result would swallow the question (`test_input_required_round_passes_through_untouched`).
+The elicitation gap is deliberate. `InputRequired*` results pass through untouched, because the
+question is what the user confirms: redacting "Grant access to jane@example.com?" would make the
+confirmation meaningless. Rebuilding one as a plain result would also swallow the question, since its
+content is empty (`test_input_required_round_passes_through_untouched`).
 
 The regex runs in linear time (`test_adversarial_inputs_run_in_linear_time`). It redacts the whole
-RFC 5322 local part, entered only at the start of its run, and errs toward over-redaction: in
-`?to=jane@example.com` the `?to=` goes too. Version specs like `lodash@4.17.21` are left alone because
-the top-level domain must be letters. IP-literal domains, dotless hosts, quoted local parts and
-percent-encoded `@` are out of scope (see `gateway/redaction.py`).
+RFC 5322 (Internet Message Format) local part, entered only at the start of its run, and errs
+toward over-redaction: in `?to=jane@example.com` the `?to=` goes too. Version specs like `lodash@4.17.21` are left alone because
+the top-level domain (TLD) must be letters. IP-literal domains, dotless hosts, quoted local parts,
+percent-encoded `@`, punycode TLD tails and TLDs glued to digits are out of scope (see
+`gateway/redaction.py`).
+
+## Host and Origin checks
+The gateway validates `Host` and `Origin` on every endpoint, as the Streamable HTTP spec requires
+against DNS rebinding: each `http_app` is built with `host_origin_protection="auto"`, which answers a
+foreign `Host` with 421 and a foreign `Origin` with 403 (`test_a_forged_host_is_rejected`,
+`test_a_forged_origin_is_rejected`, `test_a_loopback_request_with_its_own_host_is_served`). FastMCP's
+"auto" mode checks only requests whose connection arrived on a loopback address (the ASGI `server`
+address that uvicorn reports per connection), so with `--host 0.0.0.0` a request over 127.0.0.1 is
+still checked while one that arrives on any other interface skips both checks. Binding beyond loopback
+should therefore wait for M2b auth.
 
 ## Pager and registry details
 - Pager's `POST /pages` validates its input: a malformed body gets 422 and an unknown service gets
@@ -149,8 +178,8 @@ percent-encoded `@` are out of scope (see `gateway/redaction.py`).
 - `subscriptions/listen` is not proxied. FastMCP 4.1's low-level server registers no handler, so the
   client gets `Method not found`, and OpsDesk's runbook-updated events never reach it
   (`test_known_gap_subscriptions_listen_is_not_proxied`). A workaround exists (register the SDK's
-  `ListenHandler` on the private `_mcp_server` and bridge an upstream listen); mutating the gateway
-  that way turns the test red.
+  `ListenHandler` on the private `_mcp_server` and bridge an upstream listen). Registering the handler
+  alone already turns the test red: that mutation was run, and the test fails with `DID NOT RAISE`.
 - Upstream cache hints are dropped. OpsDesk answers `tools/list` with `ttlMs: 60000, public`; the
   gateway answers `ttlMs: 0, private` (`test_known_gap_upstream_cache_hints_are_dropped`). The gateway
   could declare its own hint (`create_proxy(..., cache_ttl=60, cache_scope="public")`; that mutation
@@ -159,16 +188,20 @@ percent-encoded `@` are out of scope (see `gateway/redaction.py`).
 - stdio backends share one process across every caller (see MRTR above).
 - Rate limits trust a self-asserted caller name, and a sealed `requestState` can be replayed within
   its 600 seconds. Both wait for M2b.
+- `GET /healthz` is unauthenticated and lists the server names. M2b should revisit it.
+- Elicitation questions, log notifications and progress messages reach the client unredacted (see
+  Redaction scope).
 - If one of the pinned tests fails after an upgrade, the gap closed: update this file.
 
 ## FastMCP 4.1 gotchas found while building
-- Use `create_proxy`, not a hand-built `ProxyClient` (legacy era by default).
+- Build each proxy with `create_proxy`. A hand-built `ProxyClient` defaults to the legacy era.
 - Starlette does not run mounted apps' lifespans: the parent must enter each `http_app().lifespan`, or
   every request returns 500 (`Task group is not initialized`). Yield `None`, because
   `combine_lifespans` yields `{}`, which in-process ASGI harnesses reject.
 - An `httpx_client_factory` needs the three Protocol parameters and `**kwargs` (fastmcp passes
   `follow_redirects`).
-- A stdio backend inherits stderr. Under pytest use `capfd`, not `capsys` (`fileno` error).
+- A stdio backend inherits stderr, which needs a real file descriptor. Under pytest, capture it with
+  `capfd`; with `capsys` the backend fails with a `fileno` error.
 
 ## Interview questions to rehearse
 1. Why is "unknown tool" the right answer for a disabled tool, and "forbidden" the wrong one?
