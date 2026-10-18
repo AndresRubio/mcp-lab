@@ -1,0 +1,176 @@
+"""The gateway as one ASGI app, driven in-process over Streamable HTTP (no sockets)."""
+
+import json
+from collections.abc import AsyncIterator
+from typing import Any
+
+import httpx2
+import mcp_types as mt
+import pytest
+from fastmcp import Client, FastMCP
+from fastmcp.client.transports import StreamableHttpTransport
+from fastmcp.utilities.asgi_transport import StreamingASGITransport, run_asgi_lifespan
+from mcp import Client as SDKClient
+from mcp import MCPError
+from mcp.client.session import ClientRequestContext
+from mcp.client.streamable_http import streamable_http_client
+from mcp.shared._httpx_utils import McpHttpClientFactory
+from starlette.applications import Starlette
+
+from gateway.app import create_app
+from opsdesk.data import OpsDeskStore
+
+pytestmark = pytest.mark.anyio
+
+BASE = "http://gateway.test"
+PROTOCOL = "2026-07-28"
+
+
+def _asgi_client_factory(app: Starlette) -> McpHttpClientFactory:
+    # The three named parameters satisfy the McpHttpClientFactory Protocol for pyright;
+    # **kwargs is required at runtime because fastmcp also passes follow_redirects=...
+    def factory(
+        headers: dict[str, str] | None = None,
+        timeout: httpx2.Timeout | None = None,
+        auth: httpx2.Auth | None = None,
+        **kwargs: Any,
+    ) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(
+            transport=StreamingASGITransport(app),
+            base_url=BASE,
+            headers=headers,
+            timeout=timeout,
+            auth=auth,
+            **kwargs,
+        )
+
+    return factory
+
+
+@pytest.fixture
+async def app(servers: dict[str, FastMCP]) -> AsyncIterator[Starlette]:
+    gateway = create_app(servers)
+    async with run_asgi_lifespan(gateway):
+        yield gateway
+
+
+@pytest.fixture
+async def raw(app: Starlette) -> AsyncIterator[httpx2.AsyncClient]:
+    async with httpx2.AsyncClient(transport=StreamingASGITransport(app), base_url=BASE) as client:
+        yield client
+
+
+def _client(app: Starlette, server: str, **kwargs: Any) -> Client[StreamableHttpTransport]:
+    transport = StreamableHttpTransport(
+        f"{BASE}/{server}/mcp", httpx_client_factory=_asgi_client_factory(app)
+    )
+    return Client(transport, **kwargs)
+
+
+async def _confirm(message: str, response_type: Any, params: Any, context: Any) -> dict[str, Any]:
+    return {"confirm": True}
+
+
+async def _sdk_accept(context: ClientRequestContext, params: mt.ElicitRequestParams) -> mt.ElicitResult:
+    return mt.ElicitResult(action="accept", content={"confirm": True})
+
+
+def _payload(response: httpx2.Response) -> dict[str, Any]:
+    # A JSON body, or a single SSE `data:` event, depending on how the server chose to answer.
+    text = response.text
+    body = text.split("data: ", 1)[1].strip() if "data: " in text else text
+    return json.loads(body)
+
+
+def _raw_request(method: str, **params: Any) -> tuple[dict[str, Any], dict[str, str]]:
+    meta = {
+        "io.modelcontextprotocol/protocolVersion": PROTOCOL,
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "raw", "version": "0"},
+    }
+    body = {"jsonrpc": "2.0", "id": 1, "method": method, "params": {"_meta": meta, **params}}
+    headers = {
+        "accept": "application/json, text/event-stream",
+        "mcp-protocol-version": PROTOCOL,
+        "mcp-method": method,
+    }
+    return body, headers
+
+
+async def test_healthz_lists_the_mounted_servers(raw: httpx2.AsyncClient) -> None:
+    response = await raw.get("/healthz")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "servers": ["opsdesk", "pager"]}
+
+
+async def test_both_endpoints_answer(app: Starlette) -> None:
+    async with _client(app, "opsdesk") as opsdesk, _client(app, "pager") as pager:
+        assert opsdesk.protocol_version == PROTOCOL
+        assert "list_incidents" in {t.name for t in await opsdesk.list_tools()}
+        oncall = await pager.call_tool("oncall_for", {"service": "search"})
+    assert oncall.structured_content is not None
+    assert oncall.structured_content["primary"] == "[REDACTED:email]"
+
+
+async def test_unknown_path_is_404(raw: httpx2.AsyncClient) -> None:
+    body, headers = _raw_request("tools/list")
+    response = await raw.post("/nope/mcp", json=body, headers=headers)
+    assert response.status_code == 404
+
+
+async def test_raw_2026_request_needs_no_session(raw: httpx2.AsyncClient) -> None:
+    body, headers = _raw_request("tools/list")
+    response = await raw.post("/opsdesk/mcp", json=body, headers=headers)
+    assert response.status_code == 200
+    assert "mcp-session-id" not in response.headers
+    tools = {t["name"] for t in _payload(response)["result"]["tools"]}
+    assert tools == {"list_incidents", "get_service_status", "restart_service", "run_diagnostics"}
+
+
+async def test_mrtr_restart_with_the_fastmcp_client(app: Starlette, store: OpsDeskStore) -> None:
+    async with _client(app, "opsdesk", elicitation_handler=_confirm) as client:
+        result = await client.call_tool("restart_service", {"service": "search"})
+    assert result.structured_content == {"service": "search", "restarted": True, "state": "healthy"}
+    assert store.service("search").restarts == 1
+
+
+async def test_mrtr_restart_with_the_official_sdk_client(app: Starlette, store: OpsDeskStore) -> None:
+    async with (
+        httpx2.AsyncClient(transport=StreamingASGITransport(app), base_url=BASE) as http,
+        SDKClient(
+            streamable_http_client(f"{BASE}/opsdesk/mcp", http_client=http), elicitation_callback=_sdk_accept
+        ) as client,
+    ):
+        assert client.protocol_version == PROTOCOL
+        result = await client.call_tool("restart_service", {"service": "api"})
+    assert result.structured_content == {"service": "api", "restarted": True, "state": "healthy"}
+    assert store.service("api").restarts == 1
+
+
+async def test_legacy_client_gets_the_confirmation_as_a_push(app: Starlette, store: OpsDeskStore) -> None:
+    async with _client(app, "opsdesk", elicitation_handler=_confirm, mode="legacy") as client:
+        assert client.protocol_version == "2025-11-25"
+        result = await client.call_tool("restart_service", {"service": "search"})
+    assert result.structured_content == {"service": "search", "restarted": True, "state": "healthy"}
+    assert store.service("search").restarts == 1
+
+
+# Known gaps of FastMCP 4.1's proxy. These pin today's behaviour so docs/notes/m2a.md cannot
+# silently go stale: if one starts failing, the gap closed and the notes need an update.
+
+
+async def test_known_gap_subscriptions_listen_is_not_proxied(app: Starlette) -> None:
+    async with (
+        httpx2.AsyncClient(transport=StreamingASGITransport(app), base_url=BASE) as http,
+        SDKClient(streamable_http_client(f"{BASE}/opsdesk/mcp", http_client=http)) as client,
+    ):
+        with pytest.raises(MCPError, match="Method not found"):
+            async with client.listen(resource_subscriptions=["runbook://api"]):
+                pass
+
+
+async def test_known_gap_upstream_cache_hints_are_dropped(raw: httpx2.AsyncClient) -> None:
+    # OpsDesk itself answers tools/list with ttlMs=60000 and cacheScope "public".
+    body, headers = _raw_request("tools/list")
+    result = _payload(await raw.post("/opsdesk/mcp", json=body, headers=headers))["result"]
+    assert (result["cacheScope"], result["ttlMs"]) == ("private", 0)
