@@ -1,0 +1,109 @@
+"""The gateway's data plane in memory: a registry-filtered proxy per backend."""
+
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import mcp_types as mt
+import pytest
+from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
+
+from gateway.registry import RegistryHolder
+from opsdesk.data import OpsDeskStore
+
+pytestmark = pytest.mark.anyio
+
+WriteRegistry = Callable[[Any], Path]
+
+
+async def _confirm(message: str, response_type: Any, params: Any, context: Any) -> dict[str, Any]:
+    return {"confirm": True}
+
+
+async def _names(server: FastMCP) -> set[str]:
+    async with Client(server) as client:
+        return {t.name for t in await client.list_tools()}
+
+
+async def test_proxies_are_named_and_speak_2026_07_28(opsdesk: FastMCP) -> None:
+    async with Client(opsdesk) as client:
+        assert client.protocol_version == "2026-07-28"
+        assert client.server_info is not None
+        assert client.server_info.name == "gateway/opsdesk"
+
+
+async def test_only_enabled_tools_are_listed(servers: dict[str, FastMCP]) -> None:
+    assert await _names(servers["opsdesk"]) == {
+        "list_incidents",
+        "get_service_status",
+        "restart_service",
+        "run_diagnostics",
+    }
+    assert await _names(servers["pager"]) == {"oncall_for", "send_page", "list_pages"}
+
+
+async def test_disabled_tool_is_not_callable(opsdesk: FastMCP, store: OpsDeskStore) -> None:
+    async with Client(opsdesk) as client:
+        result = await client.call_tool_mcp("update_runbook", {"service": "api", "markdown": "# pwned"})
+    assert result.is_error is True
+    assert result.content == [mt.TextContent(type="text", text="Unknown tool: 'update_runbook'")]
+    assert store.runbooks["api"].startswith("# api runbook")
+
+
+async def test_unlisted_tool_is_hidden_and_unknown(
+    opsdesk: FastMCP, holder: RegistryHolder, write_registry: WriteRegistry, registry_data: dict[str, Any]
+) -> None:
+    del registry_data["servers"]["opsdesk"]["tools"]["run_diagnostics"]
+    write_registry(registry_data)
+    holder.refresh()
+    assert "run_diagnostics" not in await _names(opsdesk)
+    async with Client(opsdesk) as client:
+        with pytest.raises(ToolError, match="Unknown tool: 'run_diagnostics'"):
+            await client.call_tool("run_diagnostics", {"service": "api"})
+
+
+async def test_hot_reload_flips_visibility_without_rebuild(
+    opsdesk: FastMCP, holder: RegistryHolder, write_registry: WriteRegistry, registry_data: dict[str, Any]
+) -> None:
+    assert "update_runbook" not in await _names(opsdesk)
+    registry_data["servers"]["opsdesk"]["tools"]["update_runbook"]["enabled"] = True
+    write_registry(registry_data)
+    assert holder.refresh() is True
+    assert "update_runbook" in await _names(opsdesk)
+    async with Client(opsdesk) as client:
+        result = await client.call_tool("update_runbook", {"service": "api", "markdown": "# v2"})
+    assert result.is_error is False
+
+
+async def test_server_removed_from_registry_exposes_nothing_until_restart(
+    opsdesk: FastMCP, holder: RegistryHolder, write_registry: WriteRegistry, registry_data: dict[str, Any]
+) -> None:
+    del registry_data["servers"]["opsdesk"]
+    write_registry(registry_data)
+    holder.refresh()
+    assert await _names(opsdesk) == set()
+
+
+async def test_mrtr_confirmation_crosses_the_gateway(opsdesk: FastMCP, store: OpsDeskStore) -> None:
+    async with Client(opsdesk, elicitation_handler=_confirm) as client:
+        result = await client.call_tool("restart_service", {"service": "search"})
+    assert result.structured_content == {"service": "search", "restarted": True, "state": "healthy"}
+    assert store.service("search").restarts == 1
+
+
+async def test_progress_crosses_the_gateway(opsdesk: FastMCP) -> None:
+    seen: list[float] = []
+
+    async def on_progress(progress: float, total: float | None, message: str | None) -> None:
+        seen.append(progress)
+
+    async with Client(opsdesk, progress_handler=on_progress) as client:
+        await client.call_tool("run_diagnostics", {"service": "api"})
+    assert seen == [1, 2, 3]
+
+
+async def test_pager_tools_reach_the_http_api(servers: dict[str, FastMCP]) -> None:
+    async with Client(servers["pager"]) as client:
+        sent = await client.call_tool("send_page", {"service": "api", "message": "5xx"})
+    assert sent.structured_content == {"id": 1, "service": "api", "message": "5xx"}
