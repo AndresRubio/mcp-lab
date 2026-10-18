@@ -175,3 +175,76 @@ def test_non_utf8_reload_keeps_last_good_registry(write_registry: WriteRegistry,
     assert holder.refresh() is False
     assert holder.current is good
     assert holder.last_error is not None
+
+
+def test_restart_only_edits_log_a_warning(
+    write_registry: WriteRegistry, caplog: pytest.LogCaptureFixture
+) -> None:
+    remote = {"owner": "x", "source": {"kind": "http", "url": "http://127.0.0.1:9/mcp"}}
+    holder = RegistryHolder(write_registry({"servers": {"opsdesk": OPSDESK, "remote": remote}}))
+    moved = {**OPSDESK, "source": {"kind": "stdio", "command": ["other-server"]}}
+    write_registry({"servers": {"opsdesk": moved, "added": remote}})
+    with caplog.at_level(logging.INFO, logger="gateway.registry"):
+        assert holder.refresh() is True
+    [warning] = [r for r in caplog.records if r.levelno == logging.WARNING]
+    message = warning.getMessage()
+    assert "restart" in message
+    assert "source changed: opsdesk" in message
+    assert "added: added" in message
+    assert "removed: remote" in message
+
+
+def test_live_edits_log_no_restart_warning(
+    write_registry: WriteRegistry, caplog: pytest.LogCaptureFixture
+) -> None:
+    holder = RegistryHolder(write_registry({"servers": {"opsdesk": OPSDESK}}))
+    flipped = {**OPSDESK, "owner": "someone-else", "tools": {"restart_service": {"enabled": True}}}
+    write_registry({"servers": {"opsdesk": flipped}})
+    with caplog.at_level(logging.INFO, logger="gateway.registry"):
+        assert holder.refresh() is True
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert "reloaded" in caplog.text
+
+
+@pytest.mark.parametrize("name", ["opsdesk", "pager-2", "a", "0ps_desk"])
+def test_server_names_that_fit_a_mount_path_are_accepted(name: str) -> None:
+    registry = Registry.model_validate({"servers": {name: OPSDESK}})
+    assert list(registry.servers) == [name]
+
+
+@pytest.mark.parametrize(
+    "name", ["", "OpsDesk", "-pager", "_pager", "a/b", "a b", "..", "a.b", "pager\n", "café"]
+)
+def test_server_names_that_would_break_the_mount_path_are_rejected(name: str) -> None:
+    with pytest.raises(ValidationError):
+        Registry.model_validate({"servers": {name: OPSDESK}})
+
+
+DUPLICATE_TOOL = """\
+servers:
+  opsdesk:
+    owner: oncall-team
+    source: {kind: stdio, command: [opsdesk-server]}
+    tools:
+      restart_service: {enabled: false}
+      restart_service: {enabled: true}
+"""
+
+DUPLICATE_SERVER = """\
+servers:
+  opsdesk: {owner: a, source: {kind: http, url: "http://127.0.0.1:9/mcp"}}
+  opsdesk: {owner: b, source: {kind: http, url: "http://127.0.0.1:9/mcp"}}
+"""
+
+
+@pytest.mark.parametrize(
+    ("text", "key"),
+    [
+        pytest.param(DUPLICATE_TOOL, "restart_service", id="tool"),
+        pytest.param(DUPLICATE_SERVER, "opsdesk", id="server"),
+    ],
+)
+def test_duplicate_keys_are_rejected(write_registry: WriteRegistry, text: str, key: str) -> None:
+    # Otherwise the last duplicate wins, and a reviewer could approve `enabled: false` above a `true`.
+    with pytest.raises(RegistryError, match=rf"duplicate key '{key}'"):
+        load_registry(write_registry(text))

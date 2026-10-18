@@ -2,6 +2,8 @@
 
 import os
 import re
+import shutil
+import socket
 import sys
 import time
 from collections.abc import Callable
@@ -30,6 +32,15 @@ OPSDESK_STDIO = [sys.executable, "-m", "opsdesk"]
 
 async def _accept(context: ClientRequestContext, params: mt.ElicitRequestParams) -> mt.ElicitResult:
     return mt.ElicitResult(action="accept", content={"confirm": True})
+
+
+def _pid_recording_opsdesk(pid_file: Path) -> list[str]:
+    """An OpsDesk stdio command that writes its PID first: the transport exposes no public pid."""
+    boot = (
+        f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "from opsdesk.__main__ import main; main([])"
+    )
+    return [sys.executable, "-c", boot]
 
 
 def _stdio_registry(registry_data: dict[str, Any]) -> dict[str, Any]:
@@ -62,6 +73,7 @@ def test_audit_reports_unlisted_backend_tools(
     assert any(re.fullmatch(r"down \(owner: nobody\): unreachable: .+", line) for line in lines)
 
 
+@pytest.mark.skipif(shutil.which("uv") is None, reason="the demo registry launches OpsDesk with `uv run`")
 def test_audit_of_the_demo_registry(capfd: pytest.CaptureFixture[str]) -> None:
     main(["audit", "--registry", str(DEMO_REGISTRY)])
     assert capfd.readouterr().out.splitlines() == [
@@ -72,9 +84,12 @@ def test_audit_of_the_demo_registry(capfd: pytest.CaptureFixture[str]) -> None:
 
 @pytest.mark.anyio
 async def test_serve_end_to_end_over_a_stdio_backend(
-    announced: Announced, write_registry: WriteRegistry, registry_data: dict[str, Any]
+    announced: Announced, write_registry: WriteRegistry, registry_data: dict[str, Any], tmp_path: Path
 ) -> None:
-    path = write_registry(_stdio_registry(registry_data))
+    data = _stdio_registry(registry_data)
+    pid_file = tmp_path / "pid"
+    data["servers"]["opsdesk"]["source"]["command"] = _pid_recording_opsdesk(pid_file)
+    path = write_registry(data)
     command = [sys.executable, "-m", "gateway", "serve", "--registry", str(path), "--port", "0"]
     with announced(command, r"Gateway listening on (http://\S+)\n\s+opsdesk: (http://\S+/opsdesk/mcp)") as m:
         base, url = m.group(1), m.group(2)
@@ -84,6 +99,13 @@ async def test_serve_end_to_end_over_a_stdio_backend(
             tools = {t.name for t in (await client.list_tools()).tools}
             first = await client.call_tool("restart_service", {"service": "search"})
             again = await client.call_tool("get_service_status", {"service": "search"})
+        pid = int(pid_file.read_text())
+        assert _alive(pid)
+    # `announced` has sent SIGTERM and waited for the gateway: its stdio backend must be gone too.
+    deadline = time.monotonic() + 10
+    while _alive(pid) and time.monotonic() < deadline:
+        await anyio.sleep(0.05)
+    assert not _alive(pid)
     assert health.json() == {"status": "ok", "servers": ["opsdesk"]}
     assert tools == {"list_incidents", "get_service_status", "restart_service", "run_diagnostics"}
     assert first.structured_content == {"service": "search", "restarted": True, "state": "healthy"}
@@ -96,6 +118,22 @@ def test_serve_refuses_an_invalid_registry(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}))
     with pytest.raises(SystemExit, match=r"registry\.yaml"):
         main(["serve", "--registry", str(path), "--port", "0"])
+
+
+def test_serve_reports_a_bad_openapi_spec_without_a_traceback(write_registry: WriteRegistry) -> None:
+    source = {"kind": "openapi", "spec": "no_such_module:SPEC", "base_url": "http://127.0.0.1:9"}
+    path = write_registry({"servers": {"pager": {"owner": "t", "source": source}}})
+    with pytest.raises(SystemExit, match=r"^mcp-gateway: Cannot load OpenAPI spec 'no_such_module:SPEC'"):
+        main(["serve", "--registry", str(path), "--port", "0"])
+
+
+def test_serve_reports_a_port_in_use_without_a_traceback(write_registry: WriteRegistry) -> None:
+    source = {"kind": "http", "url": "http://127.0.0.1:9/mcp"}
+    path = write_registry({"servers": {"remote": {"owner": "t", "source": source}}})
+    with socket.create_server(("127.0.0.1", 0)) as taken:
+        port = taken.getsockname()[1]
+        with pytest.raises(SystemExit, match=r"^mcp-gateway: .*[Aa]ddress already in use"):
+            main(["serve", "--registry", str(path), "--port", str(port)])
 
 
 def _alive(pid: int) -> bool:
@@ -113,14 +151,9 @@ async def test_audit_leaves_no_backend_process_behind(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # The transport exposes no public pid, so the backend records its own before serving.
     pid_file = tmp_path / "pid"
-    boot = (
-        f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
-        "from opsdesk.__main__ import main; main([])"
-    )
     data = _stdio_registry(registry_data)
-    data["servers"]["opsdesk"]["source"]["command"] = [sys.executable, "-c", boot]
+    data["servers"]["opsdesk"]["source"]["command"] = _pid_recording_opsdesk(pid_file)
     # Hold the targets so garbage collection cannot stop the backend for `audit`: only `aclose` may.
     held: list[ResolvedTargets] = []
 

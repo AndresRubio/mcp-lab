@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> None:
             serve(args.registry, args.host, args.port)
         else:
             anyio.run(audit, args.registry)
-    except RegistryError as err:
+    except (RegistryError, ValueError, OSError) as err:  # a bad registry or spec, or a port in use
         raise SystemExit(f"mcp-gateway: {err}") from err
 
 

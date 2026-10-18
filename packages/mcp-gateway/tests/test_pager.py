@@ -133,6 +133,7 @@ async def test_spec_matches_the_routes_and_success_statuses(pager_http: httpx2.A
     get = await pager_http.get("/oncall/api")
     post = await pager_http.post("/pages", json={"service": "api", "message": "x"})
     listing = await pager_http.get("/pages")
-    assert str(get.status_code) in SPEC["paths"]["/oncall/{service}"]["get"]["responses"]
-    assert str(post.status_code) in SPEC["paths"]["/pages"]["post"]["responses"]
-    assert str(listing.status_code) in SPEC["paths"]["/pages"]["get"]["responses"]
+    assert (get.status_code, post.status_code, listing.status_code) == (200, 201, 200)
+    assert "200" in SPEC["paths"]["/oncall/{service}"]["get"]["responses"]
+    assert "201" in SPEC["paths"]["/pages"]["post"]["responses"]
+    assert "200" in SPEC["paths"]["/pages"]["get"]["responses"]

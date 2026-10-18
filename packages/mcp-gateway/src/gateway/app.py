@@ -131,8 +131,12 @@ def create_app(
     """One Starlette app: each server at `/<name>/mcp`, plus `GET /healthz`.
 
     `on_shutdown` runs after every mounted app's lifespan has exited (e.g. `targets.aclose`).
+    Each endpoint validates `Host` and `Origin` against DNS rebinding (FastMCP's "auto" guard),
+    for requests that arrive on a loopback address.
     """
-    apps = {name: server.http_app(path="/mcp") for name, server in servers.items()}
+    apps = {
+        name: server.http_app(path="/mcp", host_origin_protection="auto") for name, server in servers.items()
+    }
 
     # Starlette does not run a mounted app's lifespan, and each FastMCP app needs its own to
     # start its session manager. Run them all here, and yield None: fastmcp's combine_lifespans

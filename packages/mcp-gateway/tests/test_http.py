@@ -4,7 +4,7 @@ import json
 import os
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +31,8 @@ pytestmark = pytest.mark.anyio
 
 BASE = "http://gateway.test"
 PROTOCOL = "2026-07-28"
+
+WriteRegistry = Callable[[Any], Path]
 
 
 def _asgi_client_factory(app: Starlette) -> McpHttpClientFactory:
@@ -134,6 +136,42 @@ async def test_raw_2026_request_needs_no_session(raw: httpx2.AsyncClient) -> Non
     assert tools == {"list_incidents", "get_service_status", "restart_service", "run_diagnostics"}
 
 
+# The in-process transport reports the URL's host as the ASGI `server`, which is what uvicorn
+# reports for a socket bound to 127.0.0.1. That makes FastMCP's "auto" Host/Origin guard apply.
+LOOPBACK = "http://127.0.0.1:8080"
+
+
+@pytest.fixture
+async def loopback(app: Starlette) -> AsyncIterator[httpx2.AsyncClient]:
+    async with httpx2.AsyncClient(transport=StreamingASGITransport(app), base_url=LOOPBACK) as client:
+        yield client
+
+
+async def test_a_loopback_request_with_its_own_host_is_served(loopback: httpx2.AsyncClient) -> None:
+    body, headers = _raw_request("tools/list")
+    for host in ("127.0.0.1:8080", "localhost:8080"):
+        response = await loopback.post("/opsdesk/mcp", json=body, headers={**headers, "host": host})
+        assert response.status_code == 200
+        assert "list_incidents" in {t["name"] for t in _payload(response)["result"]["tools"]}
+
+
+async def test_a_forged_host_is_rejected(loopback: httpx2.AsyncClient) -> None:
+    # DNS rebinding: a page on evil.example re-resolves its name to 127.0.0.1 and posts to the gateway.
+    body, headers = _raw_request("tools/list")
+    response = await loopback.post(
+        "/opsdesk/mcp", json=body, headers={**headers, "host": "evil.example:8080"}
+    )
+    assert response.status_code == 421
+
+
+async def test_a_forged_origin_is_rejected(loopback: httpx2.AsyncClient) -> None:
+    body, headers = _raw_request("tools/list")
+    response = await loopback.post(
+        "/opsdesk/mcp", json=body, headers={**headers, "origin": "http://evil.example"}
+    )
+    assert response.status_code == 403
+
+
 async def test_mrtr_restart_with_the_fastmcp_client(app: Starlette, store: OpsDeskStore) -> None:
     async with _client(app, "opsdesk", elicitation_handler=_confirm) as client:
         result = await client.call_tool("restart_service", {"service": "search"})
@@ -160,6 +198,32 @@ async def test_legacy_client_gets_the_confirmation_as_a_push(app: Starlette, sto
         result = await client.call_tool("restart_service", {"service": "search"})
     assert result.structured_content == {"service": "search", "restarted": True, "state": "healthy"}
     assert store.service("search").restarts == 1
+
+
+async def test_rate_limits_are_per_caller_over_http(
+    write_registry: WriteRegistry, registry_data: dict[str, Any], store: OpsDeskStore
+) -> None:
+    registry_data["servers"]["opsdesk"]["rate_limit"] = {"calls_per_minute": 2}
+    holder = RegistryHolder(write_registry(registry_data))
+    # A fixed clock, so a minute boundary cannot fall between the calls.
+    servers = build_gateway_servers(holder, {"opsdesk": build_server(store)}, clock=lambda: 600.0)
+    gateway = create_app(servers)
+    results: dict[str, list[mt.CallToolResult]] = {}
+    async with run_asgi_lifespan(gateway):
+        for name in ("alice", "bob"):
+            info = mt.Implementation(name=name, version="1.0")
+            async with _client(gateway, "opsdesk", client_info=info) as client:
+                assert client.protocol_version == PROTOCOL
+                results[name] = [await client.call_tool_mcp("list_incidents", {}) for _ in range(3)]
+    for name, (first, second, third) in results.items():
+        assert (first.is_error, second.is_error) == (False, False)
+        assert third.is_error is True
+        assert third.content == [
+            mt.TextContent(
+                type="text",
+                text=f"Rate limit exceeded: caller '{name}' may make 2 calls per minute to server 'opsdesk'.",
+            )
+        ]
 
 
 # Known gaps of FastMCP 4.1's proxy. These pin today's behaviour so docs/notes/m2a.md cannot
