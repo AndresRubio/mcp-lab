@@ -56,7 +56,7 @@ async def test_unlisted_tool_is_hidden_and_unknown(
 ) -> None:
     del registry_data["servers"]["opsdesk"]["tools"]["run_diagnostics"]
     write_registry(registry_data)
-    holder.refresh()
+    assert holder.refresh() is True
     assert "run_diagnostics" not in await _names(opsdesk)
     async with Client(opsdesk) as client:
         with pytest.raises(ToolError, match="Unknown tool: 'run_diagnostics'"):
@@ -76,13 +76,32 @@ async def test_hot_reload_flips_visibility_without_rebuild(
     assert result.is_error is False
 
 
+async def test_tool_disabled_after_use_is_no_longer_callable(
+    opsdesk: FastMCP, holder: RegistryHolder, write_registry: WriteRegistry, registry_data: dict[str, Any]
+) -> None:
+    async with Client(opsdesk) as client:
+        warm = await client.call_tool("get_service_status", {"service": "api"})
+        assert warm.is_error is False
+        registry_data["servers"]["opsdesk"]["tools"]["get_service_status"]["enabled"] = False
+        write_registry(registry_data)
+        assert holder.refresh() is True
+        result = await client.call_tool_mcp("get_service_status", {"service": "api"})
+        assert result.is_error is True
+        assert result.content == [mt.TextContent(type="text", text="Unknown tool: 'get_service_status'")]
+        assert "get_service_status" not in {t.name for t in await client.list_tools()}
+
+
 async def test_server_removed_from_registry_exposes_nothing_until_restart(
     opsdesk: FastMCP, holder: RegistryHolder, write_registry: WriteRegistry, registry_data: dict[str, Any]
 ) -> None:
     del registry_data["servers"]["opsdesk"]
     write_registry(registry_data)
-    holder.refresh()
+    assert holder.refresh() is True
     assert await _names(opsdesk) == set()
+    async with Client(opsdesk) as client:
+        result = await client.call_tool_mcp("list_incidents", {})
+    assert result.is_error is True
+    assert result.content == [mt.TextContent(type="text", text="Unknown tool: 'list_incidents'")]
 
 
 async def test_mrtr_confirmation_crosses_the_gateway(opsdesk: FastMCP, store: OpsDeskStore) -> None:
