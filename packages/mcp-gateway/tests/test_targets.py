@@ -59,8 +59,30 @@ def test_spec_loads_from_module_attribute_or_json_file(tmp_path: Path) -> None:
         pytest.param("gateway.pager:NOPE", "gateway.pager:NOPE", id="missing-attr"),
         pytest.param("gateway.pager:ROTA", "is not an OpenAPI spec", id="not-a-spec"),
         pytest.param("no-colon", "module:ATTR", id="malformed"),
+        pytest.param("/nonexistent/dir/spec.json", "/nonexistent/dir/spec.json", id="missing-file"),
     ],
 )
 def test_bad_spec_references_are_reported(ref: str, message: str) -> None:
     with pytest.raises(ValueError, match=message):
         load_openapi_spec(ref)
+
+
+def test_invalid_json_and_non_object_json_are_reported(tmp_path: Path) -> None:
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json")
+    with pytest.raises(ValueError, match=r"broken\.json"):
+        load_openapi_spec(str(broken))
+    array = tmp_path / "array.json"
+    array.write_text("[]")
+    with pytest.raises(ValueError, match="is not an OpenAPI spec"):
+        load_openapi_spec(str(array))
+
+
+async def test_aclose_closes_the_http_client_and_is_idempotent() -> None:
+    source = {"kind": "openapi", "spec": "gateway.pager:SPEC", "base_url": "http://pager.invalid"}
+    targets = resolve_targets(_registry(source))
+    [client] = targets.clients
+    assert not client.is_closed
+    await targets.aclose()
+    assert client.is_closed
+    await targets.aclose()

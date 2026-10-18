@@ -1,9 +1,14 @@
 """The gateway as one ASGI app, driven in-process over Streamable HTTP (no sockets)."""
 
 import json
+import os
+import sys
+import time
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
+import anyio
 import httpx2
 import mcp_types as mt
 import pytest
@@ -17,8 +22,10 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.shared._httpx_utils import McpHttpClientFactory
 from starlette.applications import Starlette
 
-from gateway.app import create_app
+from gateway.app import build_gateway_servers, create_app, resolve_targets
+from gateway.registry import Registry, RegistryHolder
 from opsdesk.data import OpsDeskStore
+from opsdesk.server import build_server
 
 pytestmark = pytest.mark.anyio
 
@@ -172,5 +179,61 @@ async def test_known_gap_subscriptions_listen_is_not_proxied(app: Starlette) -> 
 async def test_known_gap_upstream_cache_hints_are_dropped(raw: httpx2.AsyncClient) -> None:
     # OpsDesk itself answers tools/list with ttlMs=60000 and cacheScope "public".
     body, headers = _raw_request("tools/list")
+    async with Client(build_server()) as upstream:
+        listed = await upstream.list_tools_mcp()
+    assert (listed.ttl_ms, listed.cache_scope) == (60_000, "public")
     result = _payload(await raw.post("/opsdesk/mcp", json=body, headers=headers))["result"]
     assert (result["cacheScope"], result["ttlMs"]) == ("private", 0)
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+async def test_shutdown_stops_the_stdio_backend_and_closes_the_http_client(tmp_path: Path) -> None:
+    # The transport exposes no public pid, so the backend records its own before serving.
+    pid_file = tmp_path / "pid"
+    boot = (
+        f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        "from opsdesk.__main__ import main; main([])"
+    )
+    registry = Registry.model_validate(
+        {
+            "servers": {
+                "opsdesk": {
+                    "owner": "t",
+                    "source": {"kind": "stdio", "command": [sys.executable, "-c", boot]},
+                    "tools": {"list_incidents": {"enabled": True}},
+                },
+                "pager": {
+                    "owner": "t",
+                    "source": {
+                        "kind": "openapi",
+                        "spec": "gateway.pager:SPEC",
+                        "base_url": "http://pager.invalid",
+                    },
+                },
+            }
+        }
+    )
+    registry_file = tmp_path / "registry.yaml"
+    registry_file.write_text(json.dumps(registry.model_dump(mode="json")))
+    targets = resolve_targets(registry)
+    [client] = targets.clients
+    gateway = create_app(
+        build_gateway_servers(RegistryHolder(registry_file), targets), on_shutdown=targets.aclose
+    )
+    async with run_asgi_lifespan(gateway), _client(gateway, "opsdesk") as mcp:
+        assert "list_incidents" in {t.name for t in await mcp.list_tools()}
+        pid = int(pid_file.read_text())
+        assert _alive(pid)
+        assert not client.is_closed
+    deadline = time.monotonic() + 10
+    while _alive(pid) and time.monotonic() < deadline:
+        await anyio.sleep(0.05)
+    assert not _alive(pid)
+    assert client.is_closed
