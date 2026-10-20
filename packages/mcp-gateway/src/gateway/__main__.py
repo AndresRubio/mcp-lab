@@ -14,8 +14,12 @@ import anyio
 import uvicorn
 from fastmcp import Client
 
-from gateway.app import build_gateway_servers, create_app, resolve_targets
+from gateway.app import SpecError, build_gateway_servers, create_app, resolve_targets
 from gateway.registry import RegistryError, RegistryHolder, load_registry
+
+
+class BindError(Exception):
+    """The listening socket could not be bound, for example because the port is in use."""
 
 
 def serve(registry_path: Path, host: str, port: int) -> None:
@@ -23,7 +27,10 @@ def serve(registry_path: Path, host: str, port: int) -> None:
     targets = resolve_targets(holder.current)
     app = create_app(build_gateway_servers(holder, targets), on_shutdown=targets.aclose)
     # Bind before announcing, so `--port 0` reports the real port and nobody races for it.
-    sock = socket.create_server((host, port))
+    try:
+        sock = socket.create_server((host, port))
+    except OSError as err:
+        raise BindError(f"cannot listen on {host}:{port}: {err}") from err
     base = f"http://{host}:{sock.getsockname()[1]}"
     lines = [
         f"Gateway listening on {base}",
@@ -73,7 +80,7 @@ def main(argv: list[str] | None = None) -> None:
             serve(args.registry, args.host, args.port)
         else:
             anyio.run(audit, args.registry)
-    except (RegistryError, ValueError, OSError) as err:  # a bad registry or spec, or a port in use
+    except (RegistryError, SpecError, BindError) as err:  # operator errors only
         raise SystemExit(f"mcp-gateway: {err}") from err
 
 

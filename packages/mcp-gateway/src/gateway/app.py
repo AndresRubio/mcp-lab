@@ -47,28 +47,32 @@ def build_gateway_servers(
     return servers
 
 
+class SpecError(ValueError):
+    """An OpenAPI `spec:` in the registry could not be loaded."""
+
+
 def load_openapi_spec(ref: str) -> dict[str, Any]:
     """Load a spec from a `*.json` file path, or from a `package.module:ATTR` dict.
 
     The `module:ATTR` form imports operator-named code, so the registry is trusted config.
-    Every failure is a `ValueError` naming `ref`.
+    Every failure is a `SpecError` naming `ref`.
     """
     spec: object
     if ref.endswith(".json"):
         try:
             spec = json.loads(Path(ref).read_text())
         except (OSError, ValueError) as err:  # JSONDecodeError and UnicodeDecodeError are ValueErrors
-            raise ValueError(f"Cannot load OpenAPI spec {ref!r}: {err}") from err
+            raise SpecError(f"Cannot load OpenAPI spec {ref!r}: {err}") from err
     else:
         module_name, sep, attr = ref.partition(":")
         if not sep:
-            raise ValueError(f"OpenAPI spec reference {ref!r} is neither a .json path nor module:ATTR")
+            raise SpecError(f"OpenAPI spec reference {ref!r} is neither a .json path nor module:ATTR")
         try:
             spec = getattr(importlib.import_module(module_name), attr)
         except (ImportError, AttributeError) as err:
-            raise ValueError(f"Cannot load OpenAPI spec {ref!r}: {err}") from err
+            raise SpecError(f"Cannot load OpenAPI spec {ref!r}: {err}") from err
     if not isinstance(spec, dict) or "openapi" not in spec:
-        raise ValueError(f"{ref!r} is not an OpenAPI spec")
+        raise SpecError(f"{ref!r} is not an OpenAPI spec")
     return cast(dict[str, Any], spec)
 
 

@@ -152,10 +152,10 @@ content is empty (`test_input_required_round_passes_through_untouched`).
 
 The regex runs in linear time (`test_adversarial_inputs_run_in_linear_time`). It redacts the whole
 RFC 5322 (Internet Message Format) local part, entered only at the start of its run, and errs
-toward over-redaction: in `?to=jane@example.com` the `?to=` goes too. Version specs like `lodash@4.17.21` are left alone because
-the top-level domain (TLD) must be letters. IP-literal domains, dotless hosts, quoted local parts,
-percent-encoded `@`, punycode TLD tails and TLDs glued to digits are out of scope (see
-`gateway/redaction.py`).
+toward over-redaction: in `?to=jane@example.com` the `?to=` goes too. Version specs like
+`lodash@4.17.21` are left alone because the top-level domain (TLD) must be letters. IP-literal
+domains, dotless hosts, quoted local parts, percent-encoded `@`, punycode TLD tails and TLDs glued
+to digits are out of scope (see `gateway/redaction.py`).
 
 ## Host and Origin checks
 The gateway validates `Host` and `Origin` on each `/<name>/mcp` endpoint and on `GET /healthz`, as the

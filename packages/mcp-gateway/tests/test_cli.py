@@ -136,6 +136,36 @@ def test_serve_reports_a_port_in_use_without_a_traceback(write_registry: WriteRe
             main(["serve", "--registry", str(path), "--port", str(port)])
 
 
+@pytest.mark.parametrize("error", [ValueError("bug"), OSError("bug")], ids=["ValueError", "OSError"])
+def test_serve_keeps_the_traceback_of_an_unexpected_error(
+    write_registry: WriteRegistry, monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """Only the three operator errors become one-line exits; a bug elsewhere in serve propagates."""
+    source = {"kind": "http", "url": "http://127.0.0.1:9/mcp"}
+    path = write_registry({"servers": {"remote": {"owner": "t", "source": source}}})
+
+    def explode(*args: object, **kwargs: object) -> dict[str, Any]:
+        raise error
+
+    monkeypatch.setattr("gateway.__main__.build_gateway_servers", explode)
+    with pytest.raises(type(error), match="bug"):
+        main(["serve", "--registry", str(path), "--port", "0"])
+
+
+def test_audit_reports_a_bad_openapi_spec_without_a_traceback(write_registry: WriteRegistry) -> None:
+    source = {"kind": "openapi", "spec": "no_such_module:SPEC", "base_url": "http://127.0.0.1:9"}
+    path = write_registry({"servers": {"pager": {"owner": "t", "source": source}}})
+    with pytest.raises(SystemExit, match=r"^mcp-gateway: Cannot load OpenAPI spec 'no_such_module:SPEC'"):
+        main(["audit", "--registry", str(path)])
+
+
+def test_audit_refuses_an_invalid_registry(tmp_path: Path) -> None:
+    path = tmp_path / "registry.yaml"
+    path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}))
+    with pytest.raises(SystemExit, match=r"^mcp-gateway: .*registry\.yaml"):
+        main(["audit", "--registry", str(path)])
+
+
 def _alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
