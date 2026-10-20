@@ -89,10 +89,10 @@ class _UniqueKeyLoader(yaml.SafeLoader):
     while a later duplicate of the same key says `true`.
     """
 
-    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Hashable, Any]:
-        # The keys as written: the base class rewrites `node.value` when it expands `<<` merges.
-        key_nodes = [key_node for key_node, _ in node.value]
-        merge_nodes = [key_node for key_node in key_nodes if key_node.tag == _MERGE_TAG]
+    def flatten_mapping(self, node: yaml.MappingNode) -> None:
+        # Count `<<` here, before the base class strips them: flattening a mapping that merges an
+        # anchor removes the anchor's own `<<` pairs before the anchor itself is constructed.
+        merge_nodes = [key_node for key_node, _ in node.value if key_node.tag == _MERGE_TAG]
         if len(merge_nodes) > 1:  # the base class would merge both, one silently overriding the other
             raise yaml.constructor.ConstructorError(
                 "while constructing a mapping",
@@ -100,6 +100,11 @@ class _UniqueKeyLoader(yaml.SafeLoader):
                 "found duplicate key '<<'",
                 merge_nodes[1].start_mark,
             )
+        super().flatten_mapping(node)
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Hashable, Any]:
+        # The keys as written: the base class rewrites `node.value` when it expands `<<` merges.
+        key_nodes = [key_node for key_node, _ in node.value]
         mapping = super().construct_mapping(node, deep=deep)
         seen: set[object] = set()
         for key_node in key_nodes:

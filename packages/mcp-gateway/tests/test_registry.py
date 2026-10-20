@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from gateway.registry import (
@@ -14,6 +15,7 @@ from gateway.registry import (
     RegistryError,
     RegistryHolder,
     StdioSource,
+    _UniqueKeyLoader,
     load_registry,
 )
 
@@ -272,10 +274,47 @@ def test_repeated_merge_key_is_rejected(write_registry: WriteRegistry) -> None:
 
 
 def test_repeated_merge_key_at_top_level_is_rejected(write_registry: WriteRegistry) -> None:
-    # Guards the same rule at the document root, not only in nested mappings.
-    text = "base: &b {a: 1}\nother: &o {c: 2}\n<<: *b\n<<: *o\nservers: {}\n"
+    # Guards the same rule at the document root. Both merges pull in an empty mapping, so the
+    # duplicate `<<` is the only thing wrong with this otherwise valid registry.
+    text = """\
+servers:
+  opsdesk:
+    owner: oncall-team
+    source: {kind: stdio, command: [opsdesk-server]}
+    tools: &empty {}
+<<: *empty
+<<: *empty
+"""
     with pytest.raises(RegistryError, match=r"duplicate key '<<'"):
         load_registry(write_registry(text))
+
+
+def test_repeated_merge_key_in_an_anchor_merged_by_an_earlier_node_is_rejected(
+    write_registry: WriteRegistry,
+) -> None:
+    # Guards counting `<<` before the base class flattens: a shallower `<<: *a` is built first and
+    # strips the anchor's own `<<` pairs, so counting only in `construct_mapping` saw none.
+    text = """\
+p: &p {enabled: false}
+q: &q {owner: x}
+d: {e: {f: &a {<<: *p, <<: *q}}}
+c: {<<: *a}
+"""
+    with pytest.raises(RegistryError, match=r"duplicate key '<<'"):
+        load_registry(write_registry(text))
+
+
+def test_explicit_merge_tag_counts_as_a_merge_key(write_registry: WriteRegistry) -> None:
+    # Guards the tag-based count: `!!merge '<<'` is a merge key even though it is quoted.
+    text = _merge_registry("      restart_service:\n        <<: *off\n        !!merge '<<': *owned")
+    with pytest.raises(RegistryError, match=r"duplicate key '<<'"):
+        load_registry(write_registry(text))
+
+
+def test_quoted_merge_key_is_a_plain_key_next_to_a_real_merge() -> None:
+    # Guards the tag-based count: a quoted '<<' is a string key, so it is not a second merge.
+    text = "a: &a {k: 1}\nb:\n  <<: *a\n  '<<': 2\n"
+    assert yaml.load(text, Loader=_UniqueKeyLoader)["b"] == {"k": 1, "<<": 2}
 
 
 def test_single_merge_still_loads(write_registry: WriteRegistry) -> None:
