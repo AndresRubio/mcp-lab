@@ -248,3 +248,52 @@ def test_duplicate_keys_are_rejected(write_registry: WriteRegistry, text: str, k
     # Otherwise the last duplicate wins, and a reviewer could approve `enabled: false` above a `true`.
     with pytest.raises(RegistryError, match=rf"duplicate key '{key}'"):
         load_registry(write_registry(text))
+
+
+def _merge_registry(tool_body: str) -> str:
+    return f"""\
+servers:
+  opsdesk:
+    owner: oncall-team
+    source: {{kind: stdio, command: [opsdesk-server]}}
+    tools:
+      muted: &off {{enabled: false}}
+      owned_by: &owned {{owner: oncall-team}}
+{tool_body}
+"""
+
+
+def test_repeated_merge_key_is_rejected(write_registry: WriteRegistry) -> None:
+    # Guards the `<<` handling in `_UniqueKeyLoader`: two merges in one mapping let one anchor
+    # silently override the other, with nothing a reviewer would see as a duplicate.
+    text = _merge_registry("      restart_service:\n        <<: *off\n        <<: *owned")
+    with pytest.raises(RegistryError, match=r"duplicate key '<<'"):
+        load_registry(write_registry(text))
+
+
+def test_repeated_merge_key_at_top_level_is_rejected(write_registry: WriteRegistry) -> None:
+    # Guards the same rule at the document root, not only in nested mappings.
+    text = "base: &b {a: 1}\nother: &o {c: 2}\n<<: *b\n<<: *o\nservers: {}\n"
+    with pytest.raises(RegistryError, match=r"duplicate key '<<'"):
+        load_registry(write_registry(text))
+
+
+def test_single_merge_still_loads(write_registry: WriteRegistry) -> None:
+    # Guards against the new rule rejecting a legitimate single `<<`.
+    text = _merge_registry("      restart_service:\n        <<: *off\n        owner: oncall-team")
+    policy = load_registry(write_registry(text)).servers["opsdesk"].tools["restart_service"]
+    assert (policy.enabled, policy.owner) == (False, "oncall-team")
+
+
+def test_merge_list_still_loads(write_registry: WriteRegistry) -> None:
+    # Guards `<<: [*a, *b]`, the supported way to merge several anchors.
+    text = _merge_registry("      restart_service:\n        <<: [*off, *owned]")
+    policy = load_registry(write_registry(text)).servers["opsdesk"].tools["restart_service"]
+    assert (policy.enabled, policy.owner) == (False, "oncall-team")
+
+
+def test_explicit_key_overrides_merged_one(write_registry: WriteRegistry) -> None:
+    # Guards standard YAML semantics: an explicit key beats a merged one, without an error.
+    text = _merge_registry("      restart_service:\n        <<: *off\n        enabled: true")
+    policy = load_registry(write_registry(text)).servers["opsdesk"].tools["restart_service"]
+    assert policy.enabled is True

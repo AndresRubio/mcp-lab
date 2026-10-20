@@ -79,6 +79,9 @@ class RegistryError(ValueError):
     """The registry file could not be read, parsed or validated."""
 
 
+_MERGE_TAG = "tag:yaml.org,2002:merge"
+
+
 class _UniqueKeyLoader(yaml.SafeLoader):
     """A `SafeLoader` that rejects a mapping key repeated at any level.
 
@@ -89,6 +92,14 @@ class _UniqueKeyLoader(yaml.SafeLoader):
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Hashable, Any]:
         # The keys as written: the base class rewrites `node.value` when it expands `<<` merges.
         key_nodes = [key_node for key_node, _ in node.value]
+        merge_nodes = [key_node for key_node in key_nodes if key_node.tag == _MERGE_TAG]
+        if len(merge_nodes) > 1:  # the base class would merge both, one silently overriding the other
+            raise yaml.constructor.ConstructorError(
+                "while constructing a mapping",
+                node.start_mark,
+                "found duplicate key '<<'",
+                merge_nodes[1].start_mark,
+            )
         mapping = super().construct_mapping(node, deep=deep)
         seen: set[object] = set()
         for key_node in key_nodes:
