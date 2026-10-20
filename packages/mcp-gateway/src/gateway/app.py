@@ -1,9 +1,11 @@
 """Assembles the gateway: one registry-governed proxy per backend, mounted at `/<name>/mcp`."""
 
+import asyncio
 import importlib
 import json
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any, cast
@@ -103,30 +105,49 @@ class ResolvedTargets(dict[str, ProxyTarget]):
             raise ExceptionGroup("closing gateway targets failed", errors)
 
 
+def close_targets(targets: ResolvedTargets) -> None:
+    """Close `targets` from synchronous code, whether or not an event loop is running here.
+
+    `aclose` is a coroutine, so it runs on its own loop in a worker thread: that works from
+    `serve` (no loop) and from `audit` (inside one).
+    """
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(asyncio.run, targets.aclose()).result()
+
+
 def resolve_targets(registry: Registry) -> ResolvedTargets:
     """Turn each registry source into something `create_proxy` can front.
 
     stdio keeps one backend process alive for all callers (`keep_alive=True`): MRTR needs every
     round to reach the process that sealed the `requestState`. Such processes outlive the app
-    until `aclose()` is called on the result.
+    until `aclose()` is called on the result. If a source fails, what was already opened is
+    closed before the error propagates; a bad `spec:` surfaces as `SpecError`.
     """
     targets = ResolvedTargets()
-    for name, entry in registry.servers.items():
-        source = entry.source
-        match source:
-            case StdioSource():
-                command, *args = source.command
-                transport = StdioTransport(command=command, args=args, keep_alive=True)
-                targets.transports.append(transport)
-                targets[name] = transport
-            case HttpSource():
-                targets[name] = source.url
-            case OpenAPISource():
-                client = httpx2.AsyncClient(base_url=source.base_url, timeout=30)
-                targets.clients.append(client)
-                targets[name] = FastMCP.from_openapi(
-                    load_openapi_spec(source.spec), client=client, name=name, mcp_names=source.mcp_names
-                )
+    try:
+        for name, entry in registry.servers.items():
+            source = entry.source
+            match source:
+                case StdioSource():
+                    command, *args = source.command
+                    transport = StdioTransport(command=command, args=args, keep_alive=True)
+                    targets.transports.append(transport)
+                    targets[name] = transport
+                case HttpSource():
+                    targets[name] = source.url
+                case OpenAPISource():
+                    spec = load_openapi_spec(source.spec)
+                    client = httpx2.AsyncClient(base_url=source.base_url, timeout=30)
+                    targets.clients.append(client)
+                    try:
+                        targets[name] = FastMCP.from_openapi(
+                            spec, client=client, name=name, mcp_names=source.mcp_names
+                        )
+                    except ValueError as err:  # fastmcp rejects a spec that is present but malformed
+                        raise SpecError(f"Cannot load OpenAPI spec {source.spec!r}: {err}") from err
+    except BaseException:
+        close_targets(targets)
+        raise
     return targets
 
 

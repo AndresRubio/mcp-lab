@@ -14,7 +14,7 @@ import anyio
 import uvicorn
 from fastmcp import Client
 
-from gateway.app import SpecError, build_gateway_servers, create_app, resolve_targets
+from gateway.app import SpecError, build_gateway_servers, close_targets, create_app, resolve_targets
 from gateway.registry import RegistryError, RegistryHolder, load_registry
 
 
@@ -30,6 +30,7 @@ def serve(registry_path: Path, host: str, port: int) -> None:
     try:
         sock = socket.create_server((host, port))
     except OSError as err:
+        close_targets(targets)
         raise BindError(f"cannot listen on {host}:{port}: {err}") from err
     base = f"http://{host}:{sock.getsockname()[1]}"
     lines = [

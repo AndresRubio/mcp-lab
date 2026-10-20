@@ -16,6 +16,7 @@ import httpx2
 import mcp_types as mt
 import pytest
 import yaml
+from fastmcp.client.transports import StdioTransport
 from mcp import Client
 from mcp.client.session import ClientRequestContext
 
@@ -164,6 +165,60 @@ def test_audit_refuses_an_invalid_registry(tmp_path: Path) -> None:
     path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}))
     with pytest.raises(SystemExit, match=r"^mcp-gateway: .*registry\.yaml"):
         main(["audit", "--registry", str(path)])
+
+
+def _malformed_spec_registry(write_registry: WriteRegistry, tmp_path: Path) -> Path:
+    spec = tmp_path / "bad.json"
+    spec.write_text('{"openapi": "3.1.0", "paths": 5}')
+    source = {"kind": "openapi", "spec": str(spec), "base_url": "http://127.0.0.1:9"}
+    return write_registry({"servers": {"pager": {"owner": "t", "source": source}}})
+
+
+# serve and audit share resolve_targets, so one fix covers both; each gets its own test.
+@pytest.mark.parametrize("command", ["serve", "audit"])
+def test_a_malformed_openapi_spec_exits_cleanly(
+    write_registry: WriteRegistry, tmp_path: Path, command: str
+) -> None:
+    path = _malformed_spec_registry(write_registry, tmp_path)
+    extra = ["--port", "0"] if command == "serve" else []
+    with pytest.raises(SystemExit, match=r"^mcp-gateway: .*bad\.json"):
+        main([command, "--registry", str(path), *extra])
+
+
+def test_resolve_targets_closes_what_it_opened_when_a_spec_fails(
+    write_registry: WriteRegistry, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed: list[httpx2.AsyncClient] = []
+    real_aclose = httpx2.AsyncClient.aclose
+
+    async def recording_aclose(self: httpx2.AsyncClient) -> None:
+        closed.append(self)
+        await real_aclose(self)
+
+    monkeypatch.setattr(httpx2.AsyncClient, "aclose", recording_aclose)
+    path = _malformed_spec_registry(write_registry, tmp_path)
+    with pytest.raises(SystemExit):
+        main(["audit", "--registry", str(path)])
+    assert len(closed) == 1
+
+
+def test_serve_closes_the_targets_when_the_port_is_taken(
+    write_registry: WriteRegistry, registry_data: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    closed: list[object] = []
+    real_close = StdioTransport.close
+
+    async def recording_close(self: StdioTransport) -> None:
+        closed.append(self)
+        await real_close(self)
+
+    monkeypatch.setattr(StdioTransport, "close", recording_close)
+    path = write_registry(_stdio_registry(registry_data))
+    with socket.create_server(("127.0.0.1", 0)) as taken:
+        port = taken.getsockname()[1]
+        with pytest.raises(SystemExit, match=r"^mcp-gateway: .*[Aa]ddress already in use"):
+            main(["serve", "--registry", str(path), "--port", str(port)])
+    assert len(closed) == 1
 
 
 def _alive(pid: int) -> bool:
