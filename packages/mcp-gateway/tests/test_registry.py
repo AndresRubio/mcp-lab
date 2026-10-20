@@ -295,10 +295,22 @@ def test_repeated_merge_key_in_an_anchor_merged_by_an_earlier_node_is_rejected(
     # Guards counting `<<` before the base class flattens: a shallower `<<: *a` is built first and
     # strips the anchor's own `<<` pairs, so counting only in `construct_mapping` saw none.
     text = """\
-p: &p {enabled: false}
-q: &q {owner: x}
-d: {e: {f: &a {<<: *p, <<: *q}}}
-c: {<<: *a}
+servers:
+  e0:
+    owner: o
+    source: {kind: stdio, command: [x]}
+    tools: &e {}
+  y:
+    owner: o
+    source: {kind: stdio, command: [x]}
+    tools:
+      t: &a
+        <<: *e
+        <<: *e
+  x:
+    owner: o
+    source: {kind: stdio, command: [x]}
+    tools: {<<: *a}
 """
     with pytest.raises(RegistryError, match=r"duplicate key '<<'"):
         load_registry(write_registry(text))
