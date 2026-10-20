@@ -186,8 +186,17 @@ async def test_healthz_rejects_a_forged_host(loopback: httpx2.AsyncClient) -> No
 
 
 async def test_healthz_rejects_a_forged_origin(loopback: httpx2.AsyncClient) -> None:
-    response = await loopback.get("/healthz", headers={"origin": "http://evil.example"})
+    response = await loopback.get(
+        "/healthz", headers={"host": "127.0.0.1:8080", "origin": "http://evil.example"}
+    )
     assert response.status_code == 403
+
+
+async def test_a_non_get_healthz_gets_405_before_any_host_check(loopback: httpx2.AsyncClient) -> None:
+    response = await loopback.post("/healthz", headers={"host": "evil.example:8080"})
+    assert response.status_code == 405
+    assert "opsdesk" not in response.text
+    assert "pager" not in response.text
 
 
 async def test_mrtr_restart_with_the_fastmcp_client(app: Starlette, store: OpsDeskStore) -> None:

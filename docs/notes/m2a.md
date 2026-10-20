@@ -169,8 +169,8 @@ Streamable HTTP spec requires against DNS rebinding. Each `http_app` is built wi
 non-GET `/healthz` a 405 before any check runs; neither response carries data. FastMCP's
 "auto" mode checks only requests whose connection arrived on a loopback address (the ASGI `server`
 address that uvicorn reports per connection), so with `--host 0.0.0.0` a request over 127.0.0.1 is
-still checked while one that arrives on any other interface skips both checks. Binding beyond loopback
-should therefore wait for M2b auth.
+still checked while one that arrives on any other interface skips the Host check, and skips the Origin
+check unless its Host header is loopback. Binding beyond loopback should therefore wait for M2b auth.
 
 ## Pager and registry details
 - Pager's `POST /pages` validates its input: a malformed body gets 422 and an unknown service gets
