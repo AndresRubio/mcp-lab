@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -6,7 +7,7 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StdioTransport
 
-from gateway.app import load_openapi_spec, resolve_targets
+from gateway.app import SpecError, load_openapi_spec, resolve_targets
 from gateway.pager import SPEC
 from gateway.registry import Registry
 
@@ -86,3 +87,25 @@ async def test_aclose_closes_the_http_client_and_is_idempotent() -> None:
     await targets.aclose()
     assert client.is_closed
     await targets.aclose()
+
+
+def test_a_failed_resolve_spawns_no_backend(tmp_path: Path) -> None:
+    """Resolving only builds transports: a stdio command runs when the app does, not before."""
+    pid_file = tmp_path / "pid"
+    spec = tmp_path / "bad.json"
+    spec.write_text('{"openapi": "3.1.0", "paths": 5}')
+    boot = f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid()))"
+    registry = Registry.model_validate(
+        {
+            "servers": {
+                "first": {"owner": "t", "source": {"kind": "stdio", "command": [sys.executable, "-c", boot]}},
+                "second": {
+                    "owner": "t",
+                    "source": {"kind": "openapi", "spec": str(spec), "base_url": "http://127.0.0.1:9"},
+                },
+            }
+        }
+    )
+    with pytest.raises(SpecError, match=r"bad\.json"):
+        resolve_targets(registry)
+    assert not pid_file.exists()
