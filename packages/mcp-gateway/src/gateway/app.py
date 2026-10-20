@@ -71,9 +71,12 @@ def load_openapi_spec(ref: str) -> dict[str, Any]:
             spec = getattr(importlib.import_module(module_name), attr)
         except (ImportError, AttributeError) as err:
             raise SpecError(f"Cannot load OpenAPI spec {ref!r}: {err}") from err
-    if not isinstance(spec, dict) or "openapi" not in spec:
+    if not isinstance(spec, dict):
         raise SpecError(f"{ref!r} is not an OpenAPI spec")
-    return cast(dict[str, Any], spec)
+    document = cast(dict[str, Any], spec)
+    if not isinstance(document.get("openapi"), str):
+        raise SpecError(f"{ref!r} is not an OpenAPI spec")
+    return document
 
 
 class ResolvedTargets(dict[str, ProxyTarget]):

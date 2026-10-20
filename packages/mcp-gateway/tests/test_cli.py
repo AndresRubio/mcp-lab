@@ -166,9 +166,11 @@ def test_audit_refuses_an_invalid_registry(tmp_path: Path) -> None:
         main(["audit", "--registry", str(path)])
 
 
-def _malformed_spec_registry(write_registry: WriteRegistry, tmp_path: Path) -> Path:
+def _malformed_spec_registry(
+    write_registry: WriteRegistry, tmp_path: Path, spec_text: str = '{"openapi": "3.1.0", "paths": 5}'
+) -> Path:
     spec = tmp_path / "bad.json"
-    spec.write_text('{"openapi": "3.1.0", "paths": 5}')
+    spec.write_text(spec_text)
     source = {"kind": "openapi", "spec": str(spec), "base_url": "http://127.0.0.1:9"}
     return write_registry({"servers": {"pager": {"owner": "t", "source": source}}})
 
@@ -181,6 +183,19 @@ def test_a_malformed_openapi_spec_exits_cleanly(
     path = _malformed_spec_registry(write_registry, tmp_path)
     extra = ["--port", "0"] if command == "serve" else []
     with pytest.raises(SystemExit, match=r"^mcp-gateway: .*bad\.json"):
+        main([command, "--registry", str(path), *extra])
+
+
+@pytest.mark.parametrize("command", ["serve", "audit"])
+@pytest.mark.parametrize(
+    "spec_text", ['{"openapi": 3, "paths": []}', '{"openapi": null}'], ids=["int", "null"]
+)
+def test_an_openapi_spec_with_a_non_string_version_exits_cleanly(
+    write_registry: WriteRegistry, tmp_path: Path, command: str, spec_text: str
+) -> None:
+    path = _malformed_spec_registry(write_registry, tmp_path, spec_text)
+    extra = ["--port", "0"] if command == "serve" else []
+    with pytest.raises(SystemExit, match=r"^mcp-gateway: .*bad\.json.* is not an OpenAPI spec"):
         main([command, "--registry", str(path), *extra])
 
 
