@@ -172,6 +172,24 @@ async def test_a_forged_origin_is_rejected(loopback: httpx2.AsyncClient) -> None
     assert response.status_code == 403
 
 
+async def test_healthz_serves_a_loopback_request_with_its_own_host(loopback: httpx2.AsyncClient) -> None:
+    for host in ("127.0.0.1:8080", "localhost:8080"):
+        response = await loopback.get("/healthz", headers={"host": host})
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok", "servers": ["opsdesk", "pager"]}
+
+
+async def test_healthz_rejects_a_forged_host(loopback: httpx2.AsyncClient) -> None:
+    # A rebound page could otherwise read the server names.
+    response = await loopback.get("/healthz", headers={"host": "evil.example:8080"})
+    assert response.status_code == 421
+
+
+async def test_healthz_rejects_a_forged_origin(loopback: httpx2.AsyncClient) -> None:
+    response = await loopback.get("/healthz", headers={"origin": "http://evil.example"})
+    assert response.status_code == 403
+
+
 async def test_mrtr_restart_with_the_fastmcp_client(app: Starlette, store: OpsDeskStore) -> None:
     async with _client(app, "opsdesk", elicitation_handler=_confirm) as client:
         result = await client.call_tool("restart_service", {"service": "search"})

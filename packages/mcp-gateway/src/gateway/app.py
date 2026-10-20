@@ -12,11 +12,12 @@ import httpx2
 from fastmcp import FastMCP
 from fastmcp.client.transports import ClientTransport, StdioTransport
 from fastmcp.server import create_proxy
+from fastmcp.server.http import HostOriginGuardMiddleware
 from mcp.server.mcpserver import MCPServer
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.routing import BaseRoute, Mount, Route
+from starlette.routing import BaseRoute, Mount, Route, request_response
 
 from gateway.policies import GatewayPolicyMiddleware
 from gateway.registry import HttpSource, OpenAPISource, Registry, RegistryHolder, StdioSource
@@ -131,8 +132,9 @@ def create_app(
     """One Starlette app: each server at `/<name>/mcp`, plus `GET /healthz`.
 
     `on_shutdown` runs after every mounted app's lifespan has exited (e.g. `targets.aclose`).
-    Each endpoint validates `Host` and `Origin` against DNS rebinding (FastMCP's "auto" guard),
-    for requests that arrive on a loopback address.
+    Every `/<name>/mcp` endpoint and `/healthz` validate `Host` and `Origin` against DNS rebinding
+    with FastMCP's `HostOriginGuardMiddleware` in "auto" mode, which checks only requests that
+    arrive on a loopback address.
     """
     apps = {
         name: server.http_app(path="/mcp", host_origin_protection="auto") for name, server in servers.items()
@@ -153,6 +155,8 @@ def create_app(
     async def healthz(request: Request) -> JSONResponse:
         return JSONResponse({"status": "ok", "servers": list(apps)})
 
-    routes: list[BaseRoute] = [Route("/healthz", healthz, methods=["GET"])]
+    # /healthz names the servers, so it gets the same guard the MCP endpoints get.
+    guarded_healthz = HostOriginGuardMiddleware(request_response(healthz), mode="auto")
+    routes: list[BaseRoute] = [Route("/healthz", guarded_healthz, methods=["GET"])]
     routes += [Mount(f"/{name}", app=sub_app) for name, sub_app in apps.items()]
     return Starlette(routes=routes, lifespan=lifespan)

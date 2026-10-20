@@ -158,10 +158,15 @@ percent-encoded `@`, punycode TLD tails and TLDs glued to digits are out of scop
 `gateway/redaction.py`).
 
 ## Host and Origin checks
-The gateway validates `Host` and `Origin` on every endpoint, as the Streamable HTTP spec requires
-against DNS rebinding: each `http_app` is built with `host_origin_protection="auto"`, which answers a
-foreign `Host` with 421 and a foreign `Origin` with 403 (`test_a_forged_host_is_rejected`,
-`test_a_forged_origin_is_rejected`, `test_a_loopback_request_with_its_own_host_is_served`). FastMCP's
+The gateway validates `Host` and `Origin` on each `/<name>/mcp` endpoint and on `GET /healthz`, as the
+Streamable HTTP spec requires against DNS rebinding. Each `http_app` is built with
+`host_origin_protection="auto"`, and `/healthz` is wrapped in the same FastMCP
+`HostOriginGuardMiddleware` in "auto" mode, because it lists the server names. Both answer a foreign
+`Host` with 421 and a foreign `Origin` with 403 (`test_a_forged_host_is_rejected`,
+`test_a_forged_origin_is_rejected`, `test_a_loopback_request_with_its_own_host_is_served`,
+`test_healthz_rejects_a_forged_host`, `test_healthz_rejects_a_forged_origin`,
+`test_healthz_serves_a_loopback_request_with_its_own_host`). Unknown paths get a plain 404 and a
+non-GET `/healthz` a 405 before any check runs; neither response carries data. FastMCP's
 "auto" mode checks only requests whose connection arrived on a loopback address (the ASGI `server`
 address that uvicorn reports per connection), so with `--host 0.0.0.0` a request over 127.0.0.1 is
 still checked while one that arrives on any other interface skips both checks. Binding beyond loopback
