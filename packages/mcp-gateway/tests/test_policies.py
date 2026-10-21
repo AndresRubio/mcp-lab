@@ -16,7 +16,7 @@ from mcp.server.mcpserver.prompts.base import UserMessage
 from gateway.app import build_gateway_servers
 from gateway.policies import GatewayPolicyMiddleware, caller_of
 from gateway.registry import RegistryHolder
-from opsdesk.data import OpsDeskStore
+from opsdesk.data import OpsDeskStore, Service
 from opsdesk.server import build_server
 
 pytestmark = pytest.mark.anyio
@@ -108,14 +108,25 @@ async def test_openapi_backend_results_are_redacted(servers: dict[str, FastMCP])
 
 
 async def test_input_required_round_passes_through_untouched(opsdesk: FastMCP, store: OpsDeskStore) -> None:
+    # The question names an address on purpose: the gateway leaves an MRTR question as the backend
+    # wrote it, unredacted, so the user sees exactly what they are asked to confirm.
+    store.services["jane@example.com"] = Service(name="jane@example.com", state="healthy")
+    arguments = {"service": "jane@example.com"}
+    async with Client(build_server(store), elicitation_handler=_confirm) as client:
+        direct = await client.session.call_tool("restart_service", arguments, allow_input_required=True)
     async with Client(opsdesk, elicitation_handler=_confirm) as client:
-        first = await client.session.call_tool(
-            "restart_service", {"service": "api"}, allow_input_required=True
-        )
+        first = await client.session.call_tool("restart_service", arguments, allow_input_required=True)
+    assert isinstance(direct, mt.InputRequiredResult)
     assert isinstance(first, mt.InputRequiredResult)
-    assert first.input_requests
-    assert first.request_state
-    assert store.service("api").restarts == 0
+    assert first.request_state  # sealed by the gateway front, so it differs from the backend's
+    seen = first.model_dump(mode="json", exclude={"request_state"})
+    assert seen == direct.model_dump(mode="json", exclude={"request_state"})
+    [question] = seen["input_requests"].values()
+    assert question["method"] == "elicitation/create"
+    assert question["params"]["message"] == (
+        "Restart 'jane@example.com' (currently healthy)? This interrupts traffic."
+    )
+    assert store.service("jane@example.com").restarts == 0
 
 
 async def test_confirmed_restart_counts_as_one_call(limited: FastMCP, store: OpsDeskStore) -> None:
