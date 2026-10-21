@@ -1,8 +1,11 @@
 """Guard for the warnings-as-errors rule in the root pytest config.
 
-A socket dropped without close raises ResourceWarning when it is collected. The root
-config turns warnings into errors, so a test that leaks one must fail. This runs an inner
-pytest under the root config with Python dev mode on, as CI does, and checks that it fails.
+A socket dropped without close raises ResourceWarning when it is collected. The failure
+comes from `filterwarnings = ["error"]` in the root config: pytest applies that filter
+around each test, and it overrides Python's default ignore for ResourceWarning. Python dev
+mode (`-X dev`) is not needed for this. The inner pytest runs in a subprocess: in-process, it
+inherits the outer run's warning filters and fails with or without the config line, so it
+cannot detect the line being dropped.
 """
 
 from pathlib import Path
@@ -24,8 +27,7 @@ def test_leaks_a_socket():
 """
 
 
-def test_leaked_socket_fails_the_suite(pytester: pytest.Pytester, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("PYTHONDEVMODE", "1")
+def test_leaked_socket_fails_the_suite(pytester: pytest.Pytester) -> None:
     pytester.makepyfile(test_leaky=LEAKY_TEST)
     result = pytester.runpytest_subprocess(
         "-c", str(ROOT_CONFIG), "--rootdir", str(pytester.path), "-p", "no:cacheprovider", "test_leaky.py"
