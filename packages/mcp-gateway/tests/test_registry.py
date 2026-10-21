@@ -211,6 +211,60 @@ def test_a_broken_file_is_parsed_and_logged_once(
     assert "opsdesk" in holder.current.servers
 
 
+@pytest.mark.parametrize("break_it", ["overwrite", "delete"])
+def test_restoring_the_good_file_with_its_mtime_clears_the_error(
+    registry_path: Path, break_it: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    # `cp -p` or an editor restoring a backup brings back the last good bytes and their mtime. The
+    # running registry already matches, so nothing is installed, but the error must not linger.
+    good_text = yaml.safe_dump({"servers": {"opsdesk": OPSDESK}})
+    good_at = 1_700_000_000_000_000_000
+    registry_path.write_text(good_text)
+    _set_mtime(registry_path, good_at)
+    holder = RegistryHolder(registry_path)
+    good = holder.current
+
+    if break_it == "overwrite":
+        registry_path.write_text("servers: [unclosed\n")
+        _set_mtime(registry_path, 1_700_000_001_000_000_000)
+    else:
+        registry_path.unlink()
+    assert holder.refresh() is False
+    assert holder.last_error is not None
+
+    registry_path.write_text(good_text)
+    _set_mtime(registry_path, good_at)
+    with caplog.at_level(logging.INFO, logger="gateway.registry"):
+        assert holder.refresh() is False
+    assert holder.last_error is None
+    assert holder.current is good
+    assert "matches the running registry" in caplog.text
+
+    # Broken again under the new mtime: the earlier digest must not hide the new error.
+    registry_path.write_text("servers: [unclosed\n")
+    _set_mtime(registry_path, 1_700_000_002_000_000_000)
+    assert holder.refresh() is False
+    assert holder.last_error is not None
+
+
+def test_a_same_mtime_change_while_an_error_is_pending_is_still_ignored(registry_path: Path) -> None:
+    # Guards the documented rule: only an mtime change triggers a load. Reading the file to clear a
+    # pending error must not turn into loading other content written under the good file's mtime.
+    good_at = 1_700_000_000_000_000_000
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    _set_mtime(registry_path, good_at)
+    holder = RegistryHolder(registry_path)
+    registry_path.write_text("servers: [unclosed\n")
+    _set_mtime(registry_path, 1_700_000_001_000_000_000)
+    assert holder.refresh() is False
+    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True}}}
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
+    _set_mtime(registry_path, good_at)
+    assert holder.refresh() is False
+    assert holder.current.servers["opsdesk"].is_enabled("restart_service") is False
+    assert holder.last_error is not None
+
+
 def test_deleted_file_keeps_last_good_registry(write_registry: WriteRegistry) -> None:
     path = write_registry({"servers": {"opsdesk": OPSDESK}})
     holder = RegistryHolder(path)

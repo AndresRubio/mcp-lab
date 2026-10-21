@@ -43,7 +43,10 @@ everything else (see below), but a reviewer sees nothing about them.
   stays broken, each refresh reads it again and compares a SHA-256 digest, so the same broken bytes
   are parsed and logged once (`test_a_broken_file_is_parsed_and_logged_once`). A content change that
   keeps the mtime of the last good load is still not seen
-  (`test_refresh_ignores_content_change_with_same_mtime`).
+  (`test_refresh_ignores_content_change_with_same_mtime`,
+  `test_a_same_mtime_change_while_an_error_is_pending_is_still_ignored`). Restoring the last good
+  bytes with their old mtime (`cp -p`, an editor's backup) clears the pending error without installing
+  anything (`test_restoring_the_good_file_with_its_mtime_clears_the_error`).
 - The middleware calls `refresh()` at the start of every request
   (`test_each_request_refreshes_the_registry`).
 - `RegistryVisibility` reads `holder.current` on every `list_tools` and `get_tool`, so a reload needs

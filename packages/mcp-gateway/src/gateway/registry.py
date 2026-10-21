@@ -167,7 +167,8 @@ class RegistryHolder:
 
     The mtime is recorded only once a load succeeds. A file read mid-write can be broken and then
     finish under the same mtime, so a broken file is read again on each refresh; its digest is kept,
-    so the same broken bytes are not parsed or logged twice.
+    so the same broken bytes are not parsed or logged twice. While an error is pending, a file whose
+    stat and bytes match the last good load again clears the error without installing anything.
     """
 
     def __init__(self, path: Path) -> None:
@@ -176,8 +177,13 @@ class RegistryHolder:
             self._mtime_ns = path.stat().st_mtime_ns  # stat first: a write after this is seen later
         except OSError as err:
             raise RegistryError(f"{path}: {err}") from err
-        self.current: Registry = load_registry(path)
+        try:
+            raw = path.read_bytes()
+        except OSError as err:
+            raise RegistryError(f"{path}: {err}") from err
+        self.current: Registry = _parse_registry(path, raw)
         self.last_error: str | None = None
+        self._loaded_digest = hashlib.sha256(raw).digest()  # sha256 of the bytes `current` came from
         self._rejected_digest: bytes | None = None  # sha256 of the file content that last failed to load
         self._mounted = {name: entry.source for name, entry in self.current.servers.items()}
 
@@ -185,13 +191,22 @@ class RegistryHolder:
         """Reload if the file changed. Returns True only when a new registry was installed."""
         try:
             mtime_ns = self.path.stat().st_mtime_ns  # stat first: a write after this is seen later
-            if mtime_ns == self._mtime_ns:
+            if mtime_ns == self._mtime_ns and self.last_error is None:
                 return False
             raw = self.path.read_bytes()
         except OSError as err:
             self._rejected_digest = None
             return self._reject(str(err))
         digest = hashlib.sha256(raw).digest()
+        if mtime_ns == self._mtime_ns:
+            # An error is pending, and the stat matches the last good load: if the good bytes are
+            # back (`cp -p`, an editor's backup), the running registry is right and the error is stale.
+            # Other content under that mtime is ignored, as it is when no error is pending.
+            if digest == self._loaded_digest:
+                self._rejected_digest = None
+                self.last_error = None
+                logger.info("registry %s matches the running registry again", self.path)
+            return False
         if digest == self._rejected_digest:  # the same broken file: already parsed and logged
             return False
         try:
@@ -200,6 +215,7 @@ class RegistryHolder:
             self._rejected_digest = digest
             return self._reject(str(err))
         self._mtime_ns = mtime_ns
+        self._loaded_digest = digest
         self._rejected_digest = None
         self.current = registry
         self.last_error = None
