@@ -86,10 +86,23 @@ class _UniqueKeyLoader(yaml.SafeLoader):
     """A `SafeLoader` that rejects a mapping key repeated at any level.
 
     `yaml.safe_load` lets the last duplicate win, so a reviewer could approve `enabled: false`
-    while a later duplicate of the same key says `true`.
+    while a later duplicate of the same key says `true`. That includes a mapping reached only as a
+    `<<` value: the base class copies its pairs into the consumer and never constructs it alone.
     """
 
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        # Every mapping's keys as written, taken on its first flatten. Flattening rewrites
+        # `node.value` to hold the merged pairs too, and an explicit key may override a merged one.
+        self._keys_as_written: dict[yaml.MappingNode, list[yaml.Node]] = {}
+        self._unchecked: list[yaml.MappingNode] = []  # recorded by the flatten in progress
+
     def flatten_mapping(self, node: yaml.MappingNode) -> None:
+        # The base class calls this for the mapping being built and, recursively, for every mapping
+        # it merges, so each one is recorded here before any of them is rewritten.
+        if node not in self._keys_as_written:
+            self._keys_as_written[node] = [key for key, _ in node.value if key.tag != _MERGE_TAG]
+            self._unchecked.append(node)
         # Count `<<` here, before the base class strips them: flattening a mapping that merges an
         # anchor removes the anchor's own `<<` pairs before the anchor itself is constructed.
         merge_nodes = [key_node for key_node, _ in node.value if key_node.tag == _MERGE_TAG]
@@ -103,13 +116,21 @@ class _UniqueKeyLoader(yaml.SafeLoader):
         super().flatten_mapping(node)
 
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Hashable, Any]:
-        # The keys as written: the base class rewrites `node.value` when it expands `<<` merges.
-        key_nodes = [key_node for key_node, _ in node.value]
-        mapping = super().construct_mapping(node, deep=deep)
+        # The base class flattens `node` and then constructs every key in the flattened mapping,
+        # merged ones included, so each mapping that this flatten recorded has its keys built.
+        outer, self._unchecked = self._unchecked, []
+        try:
+            mapping = super().construct_mapping(node, deep=deep)
+            recorded = self._unchecked
+        finally:
+            self._unchecked = outer
+        for checked in recorded:
+            self._reject_duplicate_keys(checked, self._keys_as_written[checked])
+        return mapping
+
+    def _reject_duplicate_keys(self, node: yaml.MappingNode, key_nodes: list[yaml.Node]) -> None:
         seen: set[object] = set()
         for key_node in key_nodes:
-            if key_node not in self.constructed_objects:  # a `<<` merge key, consumed by the merge
-                continue
             key = self.constructed_objects[key_node]
             if key in seen:
                 raise yaml.constructor.ConstructorError(
@@ -119,7 +140,6 @@ class _UniqueKeyLoader(yaml.SafeLoader):
                     key_node.start_mark,
                 )
             seen.add(key)
-        return mapping
 
 
 def load_registry(path: Path) -> Registry:

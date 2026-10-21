@@ -348,3 +348,68 @@ def test_explicit_key_overrides_merged_one(write_registry: WriteRegistry) -> Non
     text = _merge_registry("      restart_service:\n        <<: *off\n        enabled: true")
     policy = load_registry(write_registry(text)).servers["opsdesk"].tools["restart_service"]
     assert policy.enabled is True
+
+
+def _servers_with_tools(tools_body: str) -> str:
+    return f"""\
+servers:
+  opsdesk:
+    owner: oncall-team
+    source: {{kind: stdio, command: [opsdesk-server]}}
+    tools:
+{tools_body}
+"""
+
+
+DUPLICATE_IN_MERGED_MAPPING = _servers_with_tools(
+    "      <<: &policies\n        restart_service: {enabled: false}\n        restart_service: {enabled: true}"
+)
+
+DUPLICATE_IN_MERGE_LIST = _servers_with_tools(
+    "      <<: [{list_incidents: {enabled: true}},"
+    " {restart_service: {enabled: false}, restart_service: {enabled: true}}]"
+)
+
+DUPLICATE_IN_NESTED_MERGE = _servers_with_tools(
+    "      <<:\n"
+    "        <<: {restart_service: {enabled: false}, restart_service: {enabled: true}}\n"
+    "        list_incidents: {enabled: true}"
+)
+
+DUPLICATE_IN_ANCHOR_ONLY_MERGED_ELSEWHERE = """\
+servers:
+  pager:
+    owner: oncall-team
+    source: {kind: stdio, command: [pager-server]}
+    tools:
+      <<: &policies {restart_service: {enabled: false}, restart_service: {enabled: true}}
+  opsdesk:
+    owner: oncall-team
+    source: {kind: stdio, command: [opsdesk-server]}
+    tools: {<<: *policies}
+"""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(DUPLICATE_IN_MERGED_MAPPING, id="merged-mapping"),
+        pytest.param(DUPLICATE_IN_MERGE_LIST, id="merge-list"),
+        pytest.param(DUPLICATE_IN_NESTED_MERGE, id="nested-merge"),
+        pytest.param(DUPLICATE_IN_ANCHOR_ONLY_MERGED_ELSEWHERE, id="anchor-merged-twice"),
+    ],
+)
+def test_duplicate_key_inside_a_merged_mapping_is_rejected(write_registry: WriteRegistry, text: str) -> None:
+    # A mapping reached only through `<<` is flattened into its consumer without being constructed,
+    # so its own duplicates must be caught there; otherwise `enabled: true` silently wins.
+    with pytest.raises(RegistryError, match=r"duplicate key 'restart_service'"):
+        load_registry(write_registry(text))
+
+
+def test_override_in_an_anchor_merged_by_a_shallower_node_still_loads() -> None:
+    # Guards standard YAML semantics when a shallower `<<: *a` flattens the deeper anchor before
+    # the anchor is built: its merged `k` and its explicit `k` are an override, not a duplicate.
+    text = "deep:\n  deeper:\n    anchor: &a {<<: {k: 1}, k: 2}\nshallow: {<<: *a}\n"
+    data = yaml.load(text, Loader=_UniqueKeyLoader)
+    assert data["shallow"] == {"k": 2}
+    assert data["deep"]["deeper"]["anchor"] == {"k": 2}
