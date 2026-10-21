@@ -14,6 +14,15 @@ base=$1
 head=$2
 out=$3
 
+# Resolve OUTFILE against the caller's directory, then run from the repo root. A pathspec of
+# `.` and the exclude both depend on the current directory, so a call from a subdirectory
+# would otherwise drop files from the diff while the stat still listed them.
+case "$out" in
+  /*) ;;
+  *) out="$PWD/$out" ;;
+esac
+cd "$(git rev-parse --show-toplevel)"
+
 git rev-parse --verify --quiet "$base" >/dev/null || { echo "bad BASE: $base" >&2; exit 2; }
 git rev-parse --verify --quiet "$head" >/dev/null || { echo "bad HEAD: $head" >&2; exit 2; }
 
