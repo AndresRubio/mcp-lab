@@ -44,3 +44,4 @@ strict = ["packages/mcp-gateway/src", "packages/opsdesk-server/src"]
 [tool.pytest.ini_options]
 testpaths = ["packages"]
 addopts = "-ra --strict-markers --import-mode=importlib"
+filterwarnings = ["error"]
