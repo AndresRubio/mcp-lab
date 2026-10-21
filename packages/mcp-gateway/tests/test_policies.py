@@ -325,6 +325,35 @@ async def test_the_call_counts_hold_only_the_current_window(limited: FastMCP, cl
     assert policy.call_counts() == {"dave": 1}
 
 
+async def test_a_huge_caller_name_is_held_as_a_bounded_key(limited: FastMCP) -> None:
+    # The name is self-asserted and unbounded, and the table keeps its keys for the whole window,
+    # so each caller may pin only a small, fixed amount of memory there.
+    [policy] = [m for m in limited.middleware if isinstance(m, GatewayPolicyMiddleware)]
+    huge = "x" * 1_000_000
+    async with Client(limited, client_info=_as(huge)) as client:
+        await client.call_tool("list_incidents", {})
+    [key] = policy.call_counts()
+    assert len(key) <= 128
+    assert key.startswith("x" * 32)  # still recognisable in logs and tests
+
+
+@pytest.mark.parametrize("shared", [31, 32, 33, 63, 64, 65, 100_000])
+async def test_names_that_differ_only_late_get_separate_limits(limited: FastMCP, shared: int) -> None:
+    # Guards against a bound that truncates: names sharing their first `shared` characters must
+    # not share a budget.
+    [policy] = [m for m in limited.middleware if isinstance(m, GatewayPolicyMiddleware)]
+    first, second = "a" * shared + "1", "a" * shared + "2"
+    async with Client(limited, client_info=_as(first)) as client:
+        for _ in range(2):
+            await client.call_tool("list_incidents", {})
+        with pytest.raises(ToolError, match="Rate limit exceeded"):
+            await client.call_tool("list_incidents", {})
+    async with Client(limited, client_info=_as(second)) as client:
+        result = await client.call_tool("list_incidents", {})
+    assert result.is_error is False
+    assert sorted(policy.call_counts().values()) == [1, 2]
+
+
 async def test_concurrent_replays_cannot_race_past_the_rate_limit(
     limited: FastMCP, store: OpsDeskStore
 ) -> None:

@@ -115,7 +115,13 @@ In an MRTR exchange a tool answers `input_required` and the client retries the c
   because the call reached the backend (`test_calls_that_fail_at_the_backend_still_count`).
 - Windows are fixed, so a caller can make up to twice the limit across a window boundary. The counts
   are pruned when the window rolls over, so memory is bounded by the callers seen in one window
-  (`test_the_call_counts_hold_only_the_current_window`). A clock that runs backwards keeps the current
+  (`test_the_call_counts_hold_only_the_current_window`). Each caller is counted under
+  `caller_key(name)`: a name of up to 64 characters is its own key, and a longer one becomes its first
+  32 characters, `~` and the SHA-256 of the whole name. A client choosing a megabyte-long name pins
+  97 characters, and names that differ anywhere keep separate budgets
+  (`test_a_huge_caller_name_is_held_as_a_bounded_key`,
+  `test_names_that_differ_only_late_get_separate_limits`). `call_counts()` and the over-limit
+  message report that key. A clock that runs backwards keeps the current
   window instead of opening a new one (`test_a_clock_running_backwards_keeps_the_current_window`).
 - Over the limit, the call fails as a tool error (`isError: true`) naming the caller, the server and
   the limit, so the model sees why. FastMCP's built-in `RateLimitingMiddleware` was not used: it hooks
