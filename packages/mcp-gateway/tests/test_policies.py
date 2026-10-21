@@ -16,7 +16,7 @@ from mcp.server.mcpserver.prompts.base import UserMessage
 from gateway.app import build_gateway_servers
 from gateway.policies import GatewayPolicyMiddleware, caller_of
 from gateway.registry import RegistryHolder
-from opsdesk.data import OpsDeskStore
+from opsdesk.data import OpsDeskStore, Service
 from opsdesk.server import build_server
 
 pytestmark = pytest.mark.anyio
@@ -108,14 +108,25 @@ async def test_openapi_backend_results_are_redacted(servers: dict[str, FastMCP])
 
 
 async def test_input_required_round_passes_through_untouched(opsdesk: FastMCP, store: OpsDeskStore) -> None:
+    # The question names an address on purpose: the gateway leaves an MRTR question as the backend
+    # wrote it, unredacted, so the user sees exactly what they are asked to confirm.
+    store.services["jane@example.com"] = Service(name="jane@example.com", state="healthy")
+    arguments = {"service": "jane@example.com"}
+    async with Client(build_server(store), elicitation_handler=_confirm) as client:
+        direct = await client.session.call_tool("restart_service", arguments, allow_input_required=True)
     async with Client(opsdesk, elicitation_handler=_confirm) as client:
-        first = await client.session.call_tool(
-            "restart_service", {"service": "api"}, allow_input_required=True
-        )
+        first = await client.session.call_tool("restart_service", arguments, allow_input_required=True)
+    assert isinstance(direct, mt.InputRequiredResult)
     assert isinstance(first, mt.InputRequiredResult)
-    assert first.input_requests
-    assert first.request_state
-    assert store.service("api").restarts == 0
+    assert first.request_state  # sealed by the gateway front, so it differs from the backend's
+    seen = first.model_dump(mode="json", exclude={"request_state"})
+    assert seen == direct.model_dump(mode="json", exclude={"request_state"})
+    [question] = seen["input_requests"].values()
+    assert question["method"] == "elicitation/create"
+    assert question["params"]["message"] == (
+        "Restart 'jane@example.com' (currently healthy)? This interrupts traffic."
+    )
+    assert store.service("jane@example.com").restarts == 0
 
 
 async def test_confirmed_restart_counts_as_one_call(limited: FastMCP, store: OpsDeskStore) -> None:
@@ -323,6 +334,35 @@ async def test_the_call_counts_hold_only_the_current_window(limited: FastMCP, cl
     async with Client(limited, client_info=_as("dave")) as client:
         await client.call_tool("list_incidents", {})
     assert policy.call_counts() == {"dave": 1}
+
+
+async def test_a_huge_caller_name_is_held_as_a_bounded_key(limited: FastMCP) -> None:
+    # The name is self-asserted and unbounded, and the table keeps its keys for the whole window,
+    # so each caller may pin only a small, fixed amount of memory there.
+    [policy] = [m for m in limited.middleware if isinstance(m, GatewayPolicyMiddleware)]
+    huge = "x" * 1_000_000
+    async with Client(limited, client_info=_as(huge)) as client:
+        await client.call_tool("list_incidents", {})
+    [key] = policy.call_counts()
+    assert len(key) <= 128
+    assert key.startswith("x" * 32)  # still recognisable in logs and tests
+
+
+@pytest.mark.parametrize("shared", [31, 32, 33, 63, 64, 65, 100_000])
+async def test_names_that_differ_only_late_get_separate_limits(limited: FastMCP, shared: int) -> None:
+    # Guards against a bound that truncates: names sharing their first `shared` characters must
+    # not share a budget.
+    [policy] = [m for m in limited.middleware if isinstance(m, GatewayPolicyMiddleware)]
+    first, second = "a" * shared + "1", "a" * shared + "2"
+    async with Client(limited, client_info=_as(first)) as client:
+        for _ in range(2):
+            await client.call_tool("list_incidents", {})
+        with pytest.raises(ToolError, match="Rate limit exceeded"):
+            await client.call_tool("list_incidents", {})
+    async with Client(limited, client_info=_as(second)) as client:
+        result = await client.call_tool("list_incidents", {})
+    assert result.is_error is False
+    assert sorted(policy.call_counts().values()) == [1, 2]
 
 
 async def test_concurrent_replays_cannot_race_past_the_rate_limit(

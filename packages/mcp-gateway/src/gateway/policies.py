@@ -1,6 +1,7 @@
 """Per-request gateway policy: live registry refresh, PII (personally identifiable information)
 redaction of results, resource reads and prompts, and per-caller rate limits."""
 
+import hashlib
 import time
 from collections.abc import Callable
 from typing import Any
@@ -17,6 +18,8 @@ from gateway.redaction import redact
 from gateway.registry import RegistryHolder
 
 WINDOW_SECONDS = 60
+CALLER_KEY_MAX_CHARS = 64  # a longer name is held as a prefix plus its SHA-256 digest
+_CALLER_KEY_PREFIX_CHARS = 32
 
 
 def caller_of(ctx: Context | None) -> str:
@@ -28,6 +31,20 @@ def caller_of(ctx: Context | None) -> str:
     request = ctx.request_context if ctx is not None else None
     params = request.session.client_params if request is not None else None
     return params.client_info.name if params is not None else "anonymous"
+
+
+def caller_key(name: str) -> str:
+    """The bounded key a caller's calls are counted under.
+
+    A name of up to `CALLER_KEY_MAX_CHARS` characters is its own key. A longer one becomes its first
+    32 characters, `~`, and the hex SHA-256 of the whole name: 97 characters, longer than any short
+    key, so the two forms never collide, and names that differ anywhere get different keys.
+    """
+    if len(name) <= CALLER_KEY_MAX_CHARS:
+        return name
+    # `surrogatepass` keeps the encoding one-to-one for a name holding lone surrogates.
+    digest = hashlib.sha256(name.encode("utf-8", "surrogatepass")).hexdigest()
+    return f"{name[:_CALLER_KEY_PREFIX_CHARS]}~{digest}"
 
 
 def _redact_content(block: mt.ContentBlock) -> mt.ContentBlock:
@@ -71,8 +88,9 @@ class GatewayPolicyMiddleware(Middleware):
     calls to unknown or hidden tools count; an MRTR first round briefly holds a slot while it is in
     flight, and rounds that end in `InputRequiredToolResult` are checked but never counted, so a
     caller below the limit can make any number of them. A clock that runs backwards keeps the
-    current window rather than opening a new one. Only the current window's counts are kept, so
-    memory is bounded by the callers seen in one window. The caller name is self-asserted
+    current window rather than opening a new one. Only the current window's counts are kept, each
+    under `caller_key(name)`, which holds at most 97 characters however long the name is, so memory
+    is bounded by the number of callers seen in one window. The caller name is self-asserted
     (`clientInfo.name`) until M2b replaces it with a verified identity.
     """
 
@@ -83,7 +101,7 @@ class GatewayPolicyMiddleware(Middleware):
         self.server_name = server_name
         self.clock = clock
         self._window: int | None = None  # index of the window `_calls` belongs to
-        self._calls: dict[str, int] = {}  # caller -> calls counted in `_window`
+        self._calls: dict[str, int] = {}  # `caller_key(name)` -> calls counted in `_window`
 
     async def on_request(
         self, context: MiddlewareContext[mt.Request[Any, Any]], call_next: CallNext[mt.Request[Any, Any], Any]
@@ -96,7 +114,7 @@ class GatewayPolicyMiddleware(Middleware):
         context: MiddlewareContext[mt.CallToolRequestParams],
         call_next: CallNext[mt.CallToolRequestParams, ToolResult],
     ) -> ToolResult:
-        caller = caller_of(context.fastmcp_context)
+        caller = caller_key(caller_of(context.fastmcp_context))
         reserved = self._reserve(caller)
         result = await call_next(context)
         if isinstance(result, InputRequiredToolResult):
@@ -144,6 +162,9 @@ class GatewayPolicyMiddleware(Middleware):
 
     def call_counts(self) -> dict[str, int]:
         """A copy of the calls counted per caller in the last window a rate-limited call saw.
+
+        Keys are `caller_key(name)`: the name itself when it is at most `CALLER_KEY_MAX_CHARS`
+        characters long, otherwise a prefix of it plus a digest.
 
         The window only rolls over when a rate-limited call arrives, so after an idle minute this
         still reports the last-seen window's counts until the next such call clears them.

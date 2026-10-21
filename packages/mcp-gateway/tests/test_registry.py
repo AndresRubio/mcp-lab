@@ -8,6 +8,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+import gateway.registry as registry_module
 from gateway.registry import (
     HttpSource,
     OpenAPISource,
@@ -148,6 +149,120 @@ def test_invalid_reload_keeps_last_good_registry(
     assert holder.refresh() is True
     assert holder.last_error is None
     assert set(holder.current.servers) == {"opsdesk", "x"}
+
+
+def _set_mtime(path: Path, stamp: int) -> None:
+    os.utime(path, ns=(stamp, stamp))
+
+
+def test_a_write_that_completes_in_the_same_tick_as_a_torn_read_is_loaded(registry_path: Path) -> None:
+    # An editor truncates, the gateway reads the empty file, and the write completes with the same
+    # mtime (coarse timestamps). The finished file must still be loaded on the next refresh.
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    _set_mtime(registry_path, 1_700_000_000_000_000_000)
+    holder = RegistryHolder(registry_path)
+    torn_at = 1_700_000_001_000_000_000
+
+    registry_path.write_text("")
+    _set_mtime(registry_path, torn_at)
+    assert holder.refresh() is False
+    assert holder.last_error is not None
+
+    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True}}}
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
+    _set_mtime(registry_path, torn_at)
+    assert holder.refresh() is True
+    assert holder.current.servers["opsdesk"].is_enabled("restart_service") is True
+    assert holder.last_error is None
+    assert holder.refresh() is False
+
+
+def test_a_broken_file_is_parsed_and_logged_once(
+    registry_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Every request refreshes, so a file that stays broken must not be parsed or logged per request.
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    _set_mtime(registry_path, 1_700_000_000_000_000_000)
+    holder = RegistryHolder(registry_path)
+    parses: list[Path] = []
+    parse = registry_module._parse_registry
+
+    def counting_parse(path: Path, raw: bytes) -> Registry:
+        parses.append(path)
+        return parse(path, raw)
+
+    monkeypatch.setattr(registry_module, "_parse_registry", counting_parse)
+    registry_path.write_text("servers: [unclosed\n")
+    _set_mtime(registry_path, 1_700_000_001_000_000_000)
+    with caplog.at_level(logging.ERROR, logger="gateway.registry"):
+        for _ in range(5):
+            assert holder.refresh() is False
+    assert len(parses) == 1
+    assert len(caplog.records) == 1
+
+    # A different broken file under the same mtime is a new error: parsed and logged once more.
+    registry_path.write_text("- just\n- a list\n")
+    _set_mtime(registry_path, 1_700_000_001_000_000_000)
+    with caplog.at_level(logging.ERROR, logger="gateway.registry"):
+        for _ in range(5):
+            assert holder.refresh() is False
+    assert len(parses) == 2
+    assert len(caplog.records) == 2
+    assert "opsdesk" in holder.current.servers
+
+
+@pytest.mark.parametrize("break_it", ["overwrite", "delete"])
+def test_restoring_the_good_file_with_its_mtime_clears_the_error(
+    registry_path: Path, break_it: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    # `cp -p` or an editor restoring a backup brings back the last good bytes and their mtime. The
+    # running registry already matches, so nothing is installed, but the error must not linger.
+    good_text = yaml.safe_dump({"servers": {"opsdesk": OPSDESK}})
+    good_at = 1_700_000_000_000_000_000
+    registry_path.write_text(good_text)
+    _set_mtime(registry_path, good_at)
+    holder = RegistryHolder(registry_path)
+    good = holder.current
+
+    if break_it == "overwrite":
+        registry_path.write_text("servers: [unclosed\n")
+        _set_mtime(registry_path, 1_700_000_001_000_000_000)
+    else:
+        registry_path.unlink()
+    assert holder.refresh() is False
+    assert holder.last_error is not None
+
+    registry_path.write_text(good_text)
+    _set_mtime(registry_path, good_at)
+    with caplog.at_level(logging.INFO, logger="gateway.registry"):
+        assert holder.refresh() is False
+    assert holder.last_error is None
+    assert holder.current is good
+    assert "matches the running registry" in caplog.text
+
+    # Broken again under the new mtime: the earlier digest must not hide the new error.
+    registry_path.write_text("servers: [unclosed\n")
+    _set_mtime(registry_path, 1_700_000_002_000_000_000)
+    assert holder.refresh() is False
+    assert holder.last_error is not None
+
+
+def test_a_same_mtime_change_while_an_error_is_pending_is_still_ignored(registry_path: Path) -> None:
+    # Guards the documented rule: only an mtime change triggers a load. Reading the file to clear a
+    # pending error must not turn into loading other content written under the good file's mtime.
+    good_at = 1_700_000_000_000_000_000
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    _set_mtime(registry_path, good_at)
+    holder = RegistryHolder(registry_path)
+    registry_path.write_text("servers: [unclosed\n")
+    _set_mtime(registry_path, 1_700_000_001_000_000_000)
+    assert holder.refresh() is False
+    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True}}}
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
+    _set_mtime(registry_path, good_at)
+    assert holder.refresh() is False
+    assert holder.current.servers["opsdesk"].is_enabled("restart_service") is False
+    assert holder.last_error is not None
 
 
 def test_deleted_file_keeps_last_good_registry(write_registry: WriteRegistry) -> None:
@@ -348,3 +463,68 @@ def test_explicit_key_overrides_merged_one(write_registry: WriteRegistry) -> Non
     text = _merge_registry("      restart_service:\n        <<: *off\n        enabled: true")
     policy = load_registry(write_registry(text)).servers["opsdesk"].tools["restart_service"]
     assert policy.enabled is True
+
+
+def _servers_with_tools(tools_body: str) -> str:
+    return f"""\
+servers:
+  opsdesk:
+    owner: oncall-team
+    source: {{kind: stdio, command: [opsdesk-server]}}
+    tools:
+{tools_body}
+"""
+
+
+DUPLICATE_IN_MERGED_MAPPING = _servers_with_tools(
+    "      <<: &policies\n        restart_service: {enabled: false}\n        restart_service: {enabled: true}"
+)
+
+DUPLICATE_IN_MERGE_LIST = _servers_with_tools(
+    "      <<: [{list_incidents: {enabled: true}},"
+    " {restart_service: {enabled: false}, restart_service: {enabled: true}}]"
+)
+
+DUPLICATE_IN_NESTED_MERGE = _servers_with_tools(
+    "      <<:\n"
+    "        <<: {restart_service: {enabled: false}, restart_service: {enabled: true}}\n"
+    "        list_incidents: {enabled: true}"
+)
+
+DUPLICATE_IN_ANCHOR_ONLY_MERGED_ELSEWHERE = """\
+servers:
+  pager:
+    owner: oncall-team
+    source: {kind: stdio, command: [pager-server]}
+    tools:
+      <<: &policies {restart_service: {enabled: false}, restart_service: {enabled: true}}
+  opsdesk:
+    owner: oncall-team
+    source: {kind: stdio, command: [opsdesk-server]}
+    tools: {<<: *policies}
+"""
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param(DUPLICATE_IN_MERGED_MAPPING, id="merged-mapping"),
+        pytest.param(DUPLICATE_IN_MERGE_LIST, id="merge-list"),
+        pytest.param(DUPLICATE_IN_NESTED_MERGE, id="nested-merge"),
+        pytest.param(DUPLICATE_IN_ANCHOR_ONLY_MERGED_ELSEWHERE, id="anchor-merged-twice"),
+    ],
+)
+def test_duplicate_key_inside_a_merged_mapping_is_rejected(write_registry: WriteRegistry, text: str) -> None:
+    # A mapping reached only through `<<` is flattened into its consumer without being constructed,
+    # so its own duplicates must be caught there; otherwise `enabled: true` silently wins.
+    with pytest.raises(RegistryError, match=r"duplicate key 'restart_service'"):
+        load_registry(write_registry(text))
+
+
+def test_override_in_an_anchor_merged_by_a_shallower_node_still_loads() -> None:
+    # Guards standard YAML semantics when a shallower `<<: *a` flattens the deeper anchor before
+    # the anchor is built: its merged `k` and its explicit `k` are an override, not a duplicate.
+    text = "deep:\n  deeper:\n    anchor: &a {<<: {k: 1}, k: 2}\nshallow: {<<: *a}\n"
+    data = yaml.load(text, Loader=_UniqueKeyLoader)
+    assert data["shallow"] == {"k": 2}
+    assert data["deep"]["deeper"]["anchor"] == {"k": 2}

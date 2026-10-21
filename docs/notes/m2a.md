@@ -37,6 +37,16 @@ everything else (see below), but a reviewer sees nothing about them.
   invalid, or the file is not valid UTF-8, it keeps the last good registry, logs the error and
   records it in `.last_error` (`test_invalid_reload_keeps_last_good_registry`,
   `test_non_utf8_reload_keeps_last_good_registry`).
+- It records the new mtime only once a load succeeds. An editor's truncate-then-write can be read
+  half-done and then finish under the same mtime, and the finished file is still loaded on the next
+  request (`test_a_write_that_completes_in_the_same_tick_as_a_torn_read_is_loaded`). While the file
+  stays broken, each refresh reads it again and compares a SHA-256 digest, so the same broken bytes
+  are parsed and logged once (`test_a_broken_file_is_parsed_and_logged_once`). A content change that
+  keeps the mtime of the last good load is still not seen
+  (`test_refresh_ignores_content_change_with_same_mtime`,
+  `test_a_same_mtime_change_while_an_error_is_pending_is_still_ignored`). Restoring the last good
+  bytes with their old mtime (`cp -p`, an editor's backup) clears the pending error without installing
+  anything (`test_restoring_the_good_file_with_its_mtime_clears_the_error`).
 - The middleware calls `refresh()` at the start of every request
   (`test_each_request_refreshes_the_registry`).
 - `RegistryVisibility` reads `holder.current` on every `list_tools` and `get_tool`, so a reload needs
@@ -108,7 +118,13 @@ In an MRTR exchange a tool answers `input_required` and the client retries the c
   because the call reached the backend (`test_calls_that_fail_at_the_backend_still_count`).
 - Windows are fixed, so a caller can make up to twice the limit across a window boundary. The counts
   are pruned when the window rolls over, so memory is bounded by the callers seen in one window
-  (`test_the_call_counts_hold_only_the_current_window`). A clock that runs backwards keeps the current
+  (`test_the_call_counts_hold_only_the_current_window`). Each caller is counted under
+  `caller_key(name)`: a name of up to 64 characters is its own key, and a longer one becomes its first
+  32 characters, `~` and the SHA-256 of the whole name. A client choosing a megabyte-long name pins
+  97 characters, and names that differ anywhere keep separate budgets
+  (`test_a_huge_caller_name_is_held_as_a_bounded_key`,
+  `test_names_that_differ_only_late_get_separate_limits`). `call_counts()` and the over-limit
+  message report that key. A clock that runs backwards keeps the current
   window instead of opening a new one (`test_a_clock_running_backwards_keeps_the_current_window`).
 - Over the limit, the call fails as a tool error (`isError: true`) naming the caller, the server and
   the limit, so the model sees why. FastMCP's built-in `RateLimitingMiddleware` was not used: it hooks
@@ -166,7 +182,11 @@ Streamable HTTP spec requires against DNS rebinding. Each `http_app` is built wi
 `test_a_forged_origin_is_rejected`, `test_a_loopback_request_with_its_own_host_is_served`,
 `test_healthz_rejects_a_forged_host`, `test_healthz_rejects_a_forged_origin`,
 `test_healthz_serves_a_loopback_request_with_its_own_host`). Unknown paths get a plain 404 and a
-non-GET `/healthz` a 405 before any check runs; neither response carries data. FastMCP's
+non-GET `/healthz` a 405 before any check runs; neither response carries data. When the request's
+`Host` is loopback, the guard also accepts any loopback `Origin` on any scheme and port, so a page
+served from `http://localhost:3000` passes. A browser still cannot use that: the endpoint takes only
+`application/json` bodies, which need a CORS preflight, and the preflight `OPTIONS` gets a 405 with
+no `Access-Control-Allow-Origin` header. FastMCP's
 "auto" mode checks only requests whose connection arrived on a loopback address (the ASGI `server`
 address that uvicorn reports per connection), so with `--host 0.0.0.0` a request over 127.0.0.1 is
 still checked while one that arrives on any other interface skips the Host check, and skips the Origin

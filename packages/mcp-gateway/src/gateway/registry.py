@@ -9,6 +9,7 @@ proxy built at startup, so adding or removing a server, or changing its `source`
 restart. A reload that makes such an edit logs a warning naming the servers.
 """
 
+import hashlib
 import logging
 from collections.abc import Hashable
 from pathlib import Path
@@ -86,10 +87,23 @@ class _UniqueKeyLoader(yaml.SafeLoader):
     """A `SafeLoader` that rejects a mapping key repeated at any level.
 
     `yaml.safe_load` lets the last duplicate win, so a reviewer could approve `enabled: false`
-    while a later duplicate of the same key says `true`.
+    while a later duplicate of the same key says `true`. That includes a mapping reached only as a
+    `<<` value: the base class copies its pairs into the consumer and never constructs it alone.
     """
 
+    def __init__(self, stream: str) -> None:
+        super().__init__(stream)
+        # Every mapping's keys as written, taken on its first flatten. Flattening rewrites
+        # `node.value` to hold the merged pairs too, and an explicit key may override a merged one.
+        self._keys_as_written: dict[yaml.MappingNode, list[yaml.Node]] = {}
+        self._unchecked: list[yaml.MappingNode] = []  # recorded by the flatten in progress
+
     def flatten_mapping(self, node: yaml.MappingNode) -> None:
+        # The base class calls this for the mapping being built and, recursively, for every mapping
+        # it merges, so each one is recorded here before any of them is rewritten.
+        if node not in self._keys_as_written:
+            self._keys_as_written[node] = [key for key, _ in node.value if key.tag != _MERGE_TAG]
+            self._unchecked.append(node)
         # Count `<<` here, before the base class strips them: flattening a mapping that merges an
         # anchor removes the anchor's own `<<` pairs before the anchor itself is constructed.
         merge_nodes = [key_node for key_node, _ in node.value if key_node.tag == _MERGE_TAG]
@@ -103,13 +117,21 @@ class _UniqueKeyLoader(yaml.SafeLoader):
         super().flatten_mapping(node)
 
     def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Hashable, Any]:
-        # The keys as written: the base class rewrites `node.value` when it expands `<<` merges.
-        key_nodes = [key_node for key_node, _ in node.value]
-        mapping = super().construct_mapping(node, deep=deep)
+        # The base class flattens `node` and then constructs every key in the flattened mapping,
+        # merged ones included, so each mapping that this flatten recorded has its keys built.
+        outer, self._unchecked = self._unchecked, []
+        try:
+            mapping = super().construct_mapping(node, deep=deep)
+            recorded = self._unchecked
+        finally:
+            self._unchecked = outer
+        for checked in recorded:
+            self._reject_duplicate_keys(checked, self._keys_as_written[checked])
+        return mapping
+
+    def _reject_duplicate_keys(self, node: yaml.MappingNode, key_nodes: list[yaml.Node]) -> None:
         seen: set[object] = set()
         for key_node in key_nodes:
-            if key_node not in self.constructed_objects:  # a `<<` merge key, consumed by the merge
-                continue
             key = self.constructed_objects[key_node]
             if key in seen:
                 raise yaml.constructor.ConstructorError(
@@ -119,14 +141,21 @@ class _UniqueKeyLoader(yaml.SafeLoader):
                     key_node.start_mark,
                 )
             seen.add(key)
-        return mapping
 
 
 def load_registry(path: Path) -> Registry:
     try:
-        data = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+        raw = path.read_bytes()
+    except OSError as err:
+        raise RegistryError(f"{path}: {err}") from err
+    return _parse_registry(path, raw)
+
+
+def _parse_registry(path: Path, raw: bytes) -> Registry:
+    try:
+        data = yaml.load(raw.decode("utf-8"), Loader=_UniqueKeyLoader)
         return Registry.model_validate(data)
-    except (OSError, UnicodeDecodeError, yaml.YAMLError, ValidationError) as err:
+    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as err:
         raise RegistryError(f"{path}: {err}") from err
 
 
@@ -135,6 +164,11 @@ class RegistryHolder:
 
     Live: tool enablement, owners and rate limits. Restart required: adding or removing servers,
     or changing a server's `source`. The servers and sources of the first load are what is mounted.
+
+    The mtime is recorded only once a load succeeds. A file read mid-write can be broken and then
+    finish under the same mtime, so a broken file is read again on each refresh; its digest is kept,
+    so the same broken bytes are not parsed or logged twice. While an error is pending, a file whose
+    stat and bytes match the last good load again clears the error without installing anything.
     """
 
     def __init__(self, path: Path) -> None:
@@ -143,23 +177,46 @@ class RegistryHolder:
             self._mtime_ns = path.stat().st_mtime_ns  # stat first: a write after this is seen later
         except OSError as err:
             raise RegistryError(f"{path}: {err}") from err
-        self.current: Registry = load_registry(path)
+        try:
+            raw = path.read_bytes()
+        except OSError as err:
+            raise RegistryError(f"{path}: {err}") from err
+        self.current: Registry = _parse_registry(path, raw)
         self.last_error: str | None = None
+        self._loaded_digest = hashlib.sha256(raw).digest()  # sha256 of the bytes `current` came from
+        self._rejected_digest: bytes | None = None  # sha256 of the file content that last failed to load
         self._mounted = {name: entry.source for name, entry in self.current.servers.items()}
 
     def refresh(self) -> bool:
         """Reload if the file changed. Returns True only when a new registry was installed."""
         try:
-            mtime_ns = self.path.stat().st_mtime_ns
+            mtime_ns = self.path.stat().st_mtime_ns  # stat first: a write after this is seen later
+            if mtime_ns == self._mtime_ns and self.last_error is None:
+                return False
+            raw = self.path.read_bytes()
         except OSError as err:
+            self._rejected_digest = None
             return self._reject(str(err))
+        digest = hashlib.sha256(raw).digest()
         if mtime_ns == self._mtime_ns:
+            # An error is pending, and the stat matches the last good load: if the good bytes are
+            # back (`cp -p`, an editor's backup), the running registry is right and the error is stale.
+            # Other content under that mtime is ignored, as it is when no error is pending.
+            if digest == self._loaded_digest:
+                self._rejected_digest = None
+                self.last_error = None
+                logger.info("registry %s matches the running registry again", self.path)
             return False
-        self._mtime_ns = mtime_ns
+        if digest == self._rejected_digest:  # the same broken file: already parsed and logged
+            return False
         try:
-            registry = load_registry(self.path)
+            registry = _parse_registry(self.path, raw)
         except RegistryError as err:
+            self._rejected_digest = digest
             return self._reject(str(err))
+        self._mtime_ns = mtime_ns
+        self._loaded_digest = digest
+        self._rejected_digest = None
         self.current = registry
         self.last_error = None
         logger.info("registry %s reloaded", self.path)
