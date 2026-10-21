@@ -1,0 +1,27 @@
+# The gateway's reviewed registry (the control plane).
+# A tool that is not listed here is hidden, and a listed tool stays disabled unless it says
+# `enabled: true`: enabling a tool is a reviewed edit to this file.
+# Tool enablement, owners and rate limits reload live; adding or removing a server needs a restart.
+servers:
+  opsdesk:
+    owner: oncall-team
+    source: {kind: stdio, command: [uv, run, opsdesk-server]}
+    rate_limit: {calls_per_minute: 30}
+    tools:
+      list_incidents: {enabled: true, owner: oncall-team}
+      get_service_status: {enabled: true, owner: oncall-team}
+      restart_service: {enabled: true, owner: oncall-team}
+      update_runbook: {enabled: false, owner: oncall-team}
+      # run_diagnostics is deliberately unlisted: `mcp-gateway audit` reports it as pending review.
+  pager:
+    owner: sre
+    source:
+      kind: openapi
+      spec: gateway.pager:SPEC
+      base_url: http://127.0.0.1:8100
+      mcp_names: {getOncall: oncall_for, createPage: send_page, listPages: list_pages}
+    rate_limit: {calls_per_minute: 10}
+    tools:
+      oncall_for: {enabled: true, owner: sre}
+      send_page: {enabled: true, owner: sre}
+      list_pages: {enabled: true, owner: sre}

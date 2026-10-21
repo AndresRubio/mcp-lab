@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "A living lab for MCP 2026-07-28, agent protocols and how to test them"
 requires-python = ">=3.13"
 dependencies = [
+    "mcp-gateway",
     "opsdesk-server",
 ]
 
@@ -12,6 +13,7 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 opsdesk-server = { workspace = true }
+mcp-gateway = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -20,6 +22,7 @@ dev = [
     "pyright==1.1.414",
     "pytest==9.1.1",
     "ruff==0.17.0",
+    "types-pyyaml==6.0.12.20260906",
 ]
 
 [tool.ruff]
@@ -31,12 +34,12 @@ extend-exclude = ["docs"]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["opsdesk"]
+known-first-party = ["gateway", "opsdesk"]
 
 [tool.pyright]
 pythonVersion = "3.13"
 include = ["packages"]
-strict = ["packages/opsdesk-server/src"]
+strict = ["packages/mcp-gateway/src", "packages/opsdesk-server/src"]
 
 [tool.pytest.ini_options]
 testpaths = ["packages"]

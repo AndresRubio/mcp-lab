@@ -5,8 +5,10 @@ Targets **MCP spec 2026-07-28** (stateless MCP) while staying compatible with 20
 
 | Milestone | Status | What it shows |
 |---|---|---|
-| M1 OpsDesk server | ✅ `m1` (Claude Code hookup unverified) | Official Python SDK v2, MRTR elicitation, `server/discover`, cache hints, `subscriptions/listen` |
-| M2 MCP gateway | planned | Registry (tools off by default), proxy, OAuth (CIMD), PII redaction, Omni discovery, OTel |
+| M1 OpsDesk server | ✅ `m1` (Claude Code hookup unverified) | Official Python SDK v2, MRTR (multi round-trip request) elicitation, `server/discover`, cache hints, `subscriptions/listen` |
+| M2a MCP gateway core | ✅ `m2a` | FastMCP 4.1 proxy per backend, YAML registry (tools off by default, hot reload), PII (personally identifiable information) redaction of results, resource reads and prompts, per-caller rate limits, OpenAPI backend |
+| M2b MCP gateway auth | planned | OAuth (Open Authorization) 2.1 with a local auth server, CIMD (Client ID Metadata Documents) clients, `iss` validation, per-server/per-tool access, token-subject callers |
+| M2c MCP gateway scale & observability | planned | Omni discovery meta-tools, response projection, OTel (OpenTelemetry) traces to Jaeger |
 | M3 Evals | planned | Tool-selection accuracy: direct vs discovery vs Code Mode |
 | M4 A2A agents | planned | Triage → Remediation delegation over A2A, tools via MCP |
 | M5 UI | planned | AG-UI approval flow, MCP App dashboard |
@@ -46,12 +48,72 @@ afterwards with `claude mcp remove opsdesk`.
 | resource | `runbook://{service}` | `ttlMs`/`cacheScope` caching, `-32602` on not-found |
 | prompt | `postmortem` | prompt arguments |
 
+## Gateway
+
+`packages/mcp-gateway` puts every registered MCP server behind one endpoint, `/<name>/mcp`, built on
+FastMCP 4.1's proxy. `packages/mcp-gateway/registry.yaml` is the control plane: a tool the registry
+does not list is hidden, and a listed tool stays disabled unless it says `enabled: true`. The demo
+registry fronts OpsDesk (stdio) and Pager, a small OpenAPI HTTP API whose on-call contacts are e-mail
+addresses that the gateway redacts.
+
+```bash
+uv run python -m gateway.pager --port 8100                                          # terminal 1: Pager API
+uv run mcp-gateway serve --registry packages/mcp-gateway/registry.yaml --port 8080   # terminal 2
+curl -s http://127.0.0.1:8080/healthz          # {"status":"ok","servers":["opsdesk","pager"]}
+uv run mcp-gateway audit --registry packages/mcp-gateway/registry.yaml
+```
+
+`serve` prints one endpoint per server (`http://127.0.0.1:8080/opsdesk/mcp`, `.../pager/mcp`).
+`audit` connects to each backend and lists the tools the registry does not cover yet:
+
+```
+opsdesk (owner: oncall-team): pending review: run_diagnostics
+pager (owner: sre): every tool is reviewed
+```
+
+Call it like any MCP server:
+
+```bash
+uv run python - <<'EOF'
+import anyio
+from mcp import Client
+
+
+async def main() -> None:
+    async with Client("http://127.0.0.1:8080/opsdesk/mcp") as opsdesk:
+        print(sorted(t.name for t in (await opsdesk.list_tools()).tools))
+    async with Client("http://127.0.0.1:8080/pager/mcp") as pager:
+        print((await pager.call_tool("oncall_for", {"service": "api"})).structured_content)
+
+
+anyio.run(main)
+EOF
+```
+
+```
+['get_service_status', 'list_incidents', 'restart_service']
+{'service': 'api', 'primary': '[REDACTED:email]', 'secondary': '[REDACTED:email]'}
+```
+
+Registry edits apply on the next request, with no restart: replace the `# run_diagnostics is
+deliberately unlisted` comment with `run_diagnostics: {enabled: true, owner: oncall-team}` and run
+the snippet again; `run_diagnostics` is now listed. Adding or removing a server, or changing a
+server's `source`, needs a restart, and the gateway logs a warning when a reload contains such an
+edit. The registry governs tools only: resources and prompts pass through ungoverned (they are still
+redacted). Redaction covers results, resource reads and prompts. Elicitation questions, log
+notifications and progress messages pass through unredacted.
+
+Treat the registry as code: a `stdio` source's `command` and an OpenAPI `module:ATTR` spec run code
+the operator names. `GET /healthz` is unauthenticated and lists the server names, which M2b will
+revisit. See [`docs/notes/m2a.md`](docs/notes/m2a.md) for the design and its known gaps.
+
 ## Test pyramid
 
 | Layer | Command | What it proves |
 |---|---|---|
 | Contract (in-memory) | `uv run pytest` | every tool/resource/prompt, MRTR rounds, error codes |
 | Transport | `uv run pytest -k transport` | stdio + Streamable HTTP, version negotiation, required headers |
+| Gateway | `uv run pytest packages/mcp-gateway` | registry, redaction, rate limits, MRTR and progress through the proxy, in-process HTTP, a `serve` subprocess end to end |
 | Conformance | `./scripts/conformance.sh` | official conformance suite (6 applicable 2025-11-25 scenarios; none exist yet for 2026-07-28) |
 | Smoke | `./scripts/inspector-smoke.sh` | MCP Inspector CLI over stdio |
 
