@@ -8,6 +8,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+import gateway.registry as registry_module
 from gateway.registry import (
     HttpSource,
     OpenAPISource,
@@ -148,6 +149,66 @@ def test_invalid_reload_keeps_last_good_registry(
     assert holder.refresh() is True
     assert holder.last_error is None
     assert set(holder.current.servers) == {"opsdesk", "x"}
+
+
+def _set_mtime(path: Path, stamp: int) -> None:
+    os.utime(path, ns=(stamp, stamp))
+
+
+def test_a_write_that_completes_in_the_same_tick_as_a_torn_read_is_loaded(registry_path: Path) -> None:
+    # An editor truncates, the gateway reads the empty file, and the write completes with the same
+    # mtime (coarse timestamps). The finished file must still be loaded on the next refresh.
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    _set_mtime(registry_path, 1_700_000_000_000_000_000)
+    holder = RegistryHolder(registry_path)
+    torn_at = 1_700_000_001_000_000_000
+
+    registry_path.write_text("")
+    _set_mtime(registry_path, torn_at)
+    assert holder.refresh() is False
+    assert holder.last_error is not None
+
+    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True}}}
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
+    _set_mtime(registry_path, torn_at)
+    assert holder.refresh() is True
+    assert holder.current.servers["opsdesk"].is_enabled("restart_service") is True
+    assert holder.last_error is None
+    assert holder.refresh() is False
+
+
+def test_a_broken_file_is_parsed_and_logged_once(
+    registry_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Every request refreshes, so a file that stays broken must not be parsed or logged per request.
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    _set_mtime(registry_path, 1_700_000_000_000_000_000)
+    holder = RegistryHolder(registry_path)
+    parses: list[Path] = []
+    parse = registry_module._parse_registry
+
+    def counting_parse(path: Path, raw: bytes) -> Registry:
+        parses.append(path)
+        return parse(path, raw)
+
+    monkeypatch.setattr(registry_module, "_parse_registry", counting_parse)
+    registry_path.write_text("servers: [unclosed\n")
+    _set_mtime(registry_path, 1_700_000_001_000_000_000)
+    with caplog.at_level(logging.ERROR, logger="gateway.registry"):
+        for _ in range(5):
+            assert holder.refresh() is False
+    assert len(parses) == 1
+    assert len(caplog.records) == 1
+
+    # A different broken file under the same mtime is a new error: parsed and logged once more.
+    registry_path.write_text("- just\n- a list\n")
+    _set_mtime(registry_path, 1_700_000_001_000_000_000)
+    with caplog.at_level(logging.ERROR, logger="gateway.registry"):
+        for _ in range(5):
+            assert holder.refresh() is False
+    assert len(parses) == 2
+    assert len(caplog.records) == 2
+    assert "opsdesk" in holder.current.servers
 
 
 def test_deleted_file_keeps_last_good_registry(write_registry: WriteRegistry) -> None:

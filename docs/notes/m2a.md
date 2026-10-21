@@ -37,6 +37,13 @@ everything else (see below), but a reviewer sees nothing about them.
   invalid, or the file is not valid UTF-8, it keeps the last good registry, logs the error and
   records it in `.last_error` (`test_invalid_reload_keeps_last_good_registry`,
   `test_non_utf8_reload_keeps_last_good_registry`).
+- It records the new mtime only once a load succeeds. An editor's truncate-then-write can be read
+  half-done and then finish under the same mtime, and the finished file is still loaded on the next
+  request (`test_a_write_that_completes_in_the_same_tick_as_a_torn_read_is_loaded`). While the file
+  stays broken, each refresh reads it again and compares a SHA-256 digest, so the same broken bytes
+  are parsed and logged once (`test_a_broken_file_is_parsed_and_logged_once`). A content change that
+  keeps the mtime of the last good load is still not seen
+  (`test_refresh_ignores_content_change_with_same_mtime`).
 - The middleware calls `refresh()` at the start of every request
   (`test_each_request_refreshes_the_registry`).
 - `RegistryVisibility` reads `holder.current` on every `list_tools` and `get_tool`, so a reload needs

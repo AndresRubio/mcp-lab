@@ -9,6 +9,7 @@ proxy built at startup, so adding or removing a server, or changing its `source`
 restart. A reload that makes such an edit logs a warning naming the servers.
 """
 
+import hashlib
 import logging
 from collections.abc import Hashable
 from pathlib import Path
@@ -144,9 +145,17 @@ class _UniqueKeyLoader(yaml.SafeLoader):
 
 def load_registry(path: Path) -> Registry:
     try:
-        data = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+        raw = path.read_bytes()
+    except OSError as err:
+        raise RegistryError(f"{path}: {err}") from err
+    return _parse_registry(path, raw)
+
+
+def _parse_registry(path: Path, raw: bytes) -> Registry:
+    try:
+        data = yaml.load(raw.decode("utf-8"), Loader=_UniqueKeyLoader)
         return Registry.model_validate(data)
-    except (OSError, UnicodeDecodeError, yaml.YAMLError, ValidationError) as err:
+    except (UnicodeDecodeError, yaml.YAMLError, ValidationError) as err:
         raise RegistryError(f"{path}: {err}") from err
 
 
@@ -155,6 +164,10 @@ class RegistryHolder:
 
     Live: tool enablement, owners and rate limits. Restart required: adding or removing servers,
     or changing a server's `source`. The servers and sources of the first load are what is mounted.
+
+    The mtime is recorded only once a load succeeds. A file read mid-write can be broken and then
+    finish under the same mtime, so a broken file is read again on each refresh; its digest is kept,
+    so the same broken bytes are not parsed or logged twice.
     """
 
     def __init__(self, path: Path) -> None:
@@ -165,21 +178,29 @@ class RegistryHolder:
             raise RegistryError(f"{path}: {err}") from err
         self.current: Registry = load_registry(path)
         self.last_error: str | None = None
+        self._rejected_digest: bytes | None = None  # sha256 of the file content that last failed to load
         self._mounted = {name: entry.source for name, entry in self.current.servers.items()}
 
     def refresh(self) -> bool:
         """Reload if the file changed. Returns True only when a new registry was installed."""
         try:
-            mtime_ns = self.path.stat().st_mtime_ns
+            mtime_ns = self.path.stat().st_mtime_ns  # stat first: a write after this is seen later
+            if mtime_ns == self._mtime_ns:
+                return False
+            raw = self.path.read_bytes()
         except OSError as err:
+            self._rejected_digest = None
             return self._reject(str(err))
-        if mtime_ns == self._mtime_ns:
+        digest = hashlib.sha256(raw).digest()
+        if digest == self._rejected_digest:  # the same broken file: already parsed and logged
             return False
-        self._mtime_ns = mtime_ns
         try:
-            registry = load_registry(self.path)
+            registry = _parse_registry(self.path, raw)
         except RegistryError as err:
+            self._rejected_digest = digest
             return self._reject(str(err))
+        self._mtime_ns = mtime_ns
+        self._rejected_digest = None
         self.current = registry
         self.last_error = None
         logger.info("registry %s reloaded", self.path)
