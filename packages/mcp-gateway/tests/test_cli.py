@@ -220,8 +220,8 @@ async def test_audit_leaves_no_backend_process_behind(
     # Hold the targets so garbage collection cannot stop the backend for `audit`: only `aclose` may.
     held: list[ResolvedTargets] = []
 
-    def resolve_and_hold(registry: Registry) -> ResolvedTargets:
-        held.append(resolve_targets(registry))
+    def resolve_and_hold(registry: Registry, *, spec_dir: Path | None = None) -> ResolvedTargets:
+        held.append(resolve_targets(registry, spec_dir=spec_dir))
         return held[-1]
 
     monkeypatch.setattr("gateway.__main__.resolve_targets", resolve_and_hold)
@@ -232,3 +232,25 @@ async def test_audit_leaves_no_backend_process_behind(
     while _alive(pid) and time.monotonic() < deadline:
         await anyio.sleep(0.05)
     assert not _alive(pid)
+
+
+def test_audit_loads_a_spec_relative_to_the_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    import json
+
+    from gateway.pager import SPEC
+
+    registry_dir = tmp_path / "etc"
+    registry_dir.mkdir()
+    (registry_dir / "pager.json").write_text(json.dumps(SPEC))
+    source = {"kind": "openapi", "spec": "pager.json", "base_url": "http://pager.invalid"}
+    registry = registry_dir / "registry.yaml"
+    registry.write_text(yaml.safe_dump({"servers": {"pager": {"owner": "t", "source": source}}}))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    main(["audit", "--registry", str(registry)])
+    assert capfd.readouterr().out.splitlines() == [
+        "pager (owner: t): pending review: getOncall, listPages, createPage"
+    ]

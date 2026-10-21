@@ -156,3 +156,36 @@ def test_matching_method_and_name_headers_succeed(http_url: str) -> None:
     }
     response = httpx2.post(http_url, json=_tools_call_body("get_service_status"), headers=headers)
     assert response.status_code == 200
+
+
+def _ipv6_loopback_available() -> bool:
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET6) as probe:
+            probe.bind(("::1", 0))
+    except OSError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(not _ipv6_loopback_available(), reason="no IPv6 loopback on this host")
+@pytest.mark.anyio
+async def test_serves_on_an_ipv6_host() -> None:
+    with _http_server("--host", "::1") as url:
+        assert url.startswith("http://[::1]:")
+        async with Client(url) as client:
+            assert client.protocol_version == PROTOCOL
+
+
+def test_a_port_in_use_is_reported_without_a_traceback() -> None:
+    import socket
+
+    from opsdesk.__main__ import main
+
+    with socket.create_server(("127.0.0.1", 0)) as taken:
+        port = taken.getsockname()[1]
+        with pytest.raises(
+            SystemExit, match=r"^opsdesk-server: cannot listen on .*[Aa]ddress already in use"
+        ):
+            main(["--transport", "http", "--port", str(port)])

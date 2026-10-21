@@ -6,18 +6,19 @@ Run it with `python -m gateway.pager --port 8100`.
 """
 
 import argparse
-import socket
 import sys
 from typing import Any, cast
 
 import httpx2
 import uvicorn
 from fastmcp import FastMCP
-from fastmcp.server.providers.openapi import OpenAPIProvider
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+
+from gateway.listen import BindError, base_url, listen
+from gateway.openapi import openapi_server
 
 ROTA: dict[str, tuple[str, str]] = {
     "api": ("dana.lee@example.com", "sam.ortiz@example.com"),
@@ -144,8 +145,8 @@ def create_pager_app() -> Starlette:
 
 
 def pager_mcp(client: httpx2.AsyncClient) -> FastMCP:
-    """The Pager API as an MCP server: one tool per operation, with stable snake_case names."""
-    return FastMCP("pager", providers=[OpenAPIProvider(SPEC, client, mcp_names=MCP_NAMES)])
+    """The Pager API as an MCP server, built the way `resolve_targets` builds an `openapi` source."""
+    return openapi_server(SPEC, client, name="pager", mcp_names=MCP_NAMES)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -154,9 +155,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=8100, help="0 picks a free port")
     args = parser.parse_args(argv)
     # Bind before announcing, so `--port 0` reports the real port and nobody races for it.
-    sock = socket.create_server((args.host, args.port))
-    port = sock.getsockname()[1]
-    print(f"Pager listening on http://{args.host}:{port}", file=sys.stderr, flush=True)
+    try:
+        sock = listen(args.host, args.port)
+    except BindError as err:
+        raise SystemExit(f"pager: {err}") from err
+    print(f"Pager listening on {base_url(args.host, sock.getsockname()[1])}", file=sys.stderr, flush=True)
     uvicorn.Server(uvicorn.Config(create_pager_app(), log_level="warning")).run(sockets=[sock])
 
 

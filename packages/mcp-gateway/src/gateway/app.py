@@ -19,6 +19,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import BaseRoute, Mount, Route, request_response
 
+from gateway.openapi import openapi_server
 from gateway.policies import GatewayPolicyMiddleware
 from gateway.registry import HttpSource, OpenAPISource, Registry, RegistryHolder, StdioSource
 from gateway.visibility import RegistryVisibility
@@ -51,18 +52,21 @@ class SpecError(ValueError):
     """An OpenAPI `spec:` in the registry could not be loaded."""
 
 
-def load_openapi_spec(ref: str) -> dict[str, Any]:
+def load_openapi_spec(ref: str, *, relative_to: Path | None = None) -> dict[str, Any]:
     """Load a spec from a `*.json` file path, or from a `package.module:ATTR` dict.
 
-    The `module:ATTR` form imports operator-named code, so the registry is trusted config.
-    Every failure is a `SpecError` naming `ref`.
+    A relative path is resolved against `relative_to` (the registry's directory) when given, so the
+    working directory the gateway starts from does not decide which file is loaded. The file is read
+    as UTF-8. The `module:ATTR` form imports operator-named code, so the registry is trusted config.
+    Every failure is a `SpecError` naming `ref` and, for a file, the path that was tried.
     """
     spec: object
     if ref.endswith(".json"):
+        path = Path(ref) if relative_to is None else relative_to / ref
         try:
-            spec = json.loads(Path(ref).read_text())
+            spec = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as err:  # JSONDecodeError and UnicodeDecodeError are ValueErrors
-            raise SpecError(f"Cannot load OpenAPI spec {ref!r}: {err}") from err
+            raise SpecError(f"Cannot load OpenAPI spec {ref!r} ({path}): {err}") from err
     else:
         module_name, sep, attr = ref.partition(":")
         if not sep:
@@ -106,13 +110,14 @@ class ResolvedTargets(dict[str, ProxyTarget]):
             raise ExceptionGroup("closing gateway targets failed", errors)
 
 
-def resolve_targets(registry: Registry) -> ResolvedTargets:
+def resolve_targets(registry: Registry, *, spec_dir: Path | None = None) -> ResolvedTargets:
     """Turn each registry source into something `create_proxy` can front.
 
     stdio keeps one backend process alive for all callers (`keep_alive=True`): MRTR needs every
     round to reach the process that sealed the `requestState`. Such processes outlive the app
     until `aclose()` is called on the result. Nothing is started or connected until the app
-    runs, so an error here leaks no process or socket. A bad `spec:` surfaces as `SpecError`.
+    runs, so an error here leaks no process or socket. A bad `spec:` surfaces as `SpecError`;
+    a relative spec path is resolved against `spec_dir`, the registry file's directory.
     """
     targets = ResolvedTargets()
     for name, entry in registry.servers.items():
@@ -126,13 +131,11 @@ def resolve_targets(registry: Registry) -> ResolvedTargets:
             case HttpSource():
                 targets[name] = source.url
             case OpenAPISource():
-                spec = load_openapi_spec(source.spec)
+                spec = load_openapi_spec(source.spec, relative_to=spec_dir)
                 client = httpx2.AsyncClient(base_url=source.base_url, timeout=30)
                 targets.clients.append(client)
                 try:
-                    targets[name] = FastMCP.from_openapi(
-                        spec, client=client, name=name, mcp_names=source.mcp_names
-                    )
+                    targets[name] = openapi_server(spec, client, name=name, mcp_names=source.mcp_names)
                 except ValueError as err:  # fastmcp rejects a spec that is present but malformed
                     raise SpecError(f"Cannot load OpenAPI spec {source.spec!r}: {err}") from err
     return targets

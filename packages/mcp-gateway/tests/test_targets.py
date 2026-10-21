@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -109,3 +110,25 @@ def test_a_failed_resolve_spawns_no_backend(tmp_path: Path) -> None:
     with pytest.raises(SpecError, match=r"bad\.json"):
         resolve_targets(registry)
     assert not pid_file.exists()
+
+
+def test_a_relative_spec_path_is_resolved_against_the_registry_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The operator writes `spec: pager.json` next to registry.yaml and starts the gateway from
+    # anywhere; the working directory must not decide which file is loaded.
+    registry_dir = tmp_path / "etc"
+    registry_dir.mkdir()
+    (registry_dir / "pager.json").write_text(json.dumps(SPEC))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    source = {"kind": "openapi", "spec": "pager.json", "base_url": "http://pager.invalid"}
+    [target] = resolve_targets(_registry(source), spec_dir=registry_dir).values()
+    assert isinstance(target, FastMCP)
+
+
+def test_a_missing_relative_spec_is_reported_with_its_resolved_path(tmp_path: Path) -> None:
+    source = {"kind": "openapi", "spec": "missing.json", "base_url": "http://pager.invalid"}
+    with pytest.raises(SpecError, match=re.escape(str(tmp_path / "missing.json"))):
+        resolve_targets(_registry(source), spec_dir=tmp_path)

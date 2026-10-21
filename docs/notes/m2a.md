@@ -40,9 +40,13 @@ everything else (see below), but a reviewer sees nothing about them.
 - It records the new mtime only once a load succeeds. An editor's truncate-then-write can be read
   half-done and then finish under the same mtime, and the finished file is still loaded on the next
   request (`test_a_write_that_completes_in_the_same_tick_as_a_torn_read_is_loaded`). While the file
-  stays broken, each refresh reads it again and compares a SHA-256 digest, so the same broken bytes
-  are parsed and logged once (`test_a_broken_file_is_parsed_and_logged_once`). A content change that
-  keeps the mtime of the last good load is still not seen
+  stays broken, a refresh reads it again only when its stat (mtime and size) differs from the content
+  last read and not installed, and compares a SHA-256 digest before parsing, so the same broken bytes
+  are read, parsed and logged once; the refresh runs in the event loop on every request, and a read
+  is only cheap on a local disk (`test_a_broken_file_is_read_parsed_and_logged_once`,
+  `test_ignored_content_under_the_good_mtime_is_read_once_while_an_error_is_pending`). A content
+  change that keeps both the mtime and the size of the rejected content is therefore not seen either.
+  A content change that keeps the mtime of the last good load is still not seen
   (`test_refresh_ignores_content_change_with_same_mtime`,
   `test_a_same_mtime_change_while_an_error_is_pending_is_still_ignored`). Restoring the last good
   bytes with their old mtime (`cp -p`, an editor's backup) clears the pending error without installing
@@ -196,6 +200,23 @@ check unless its Host header is loopback. Binding beyond loopback should therefo
 - Pager's `POST /pages` validates its input: a malformed body gets 422 and an unknown service gets
   404, and neither creates a page (`test_bad_page_requests_get_a_detail_and_create_nothing`,
   `test_unknown_service_is_404`).
+- An `openapi` source's `spec:` may be a `.json` path; a relative one is resolved against the
+  registry file's directory, not the working directory, and read as UTF-8
+  (`test_a_relative_spec_path_is_resolved_against_the_registry_directory`,
+  `test_audit_loads_a_spec_relative_to_the_registry`). `resolve_targets` and the tests' `pager_mcp`
+  build an OpenAPI server through the same `gateway.openapi.openapi_server`, so the Pager the tests
+  drive is the Pager `serve` mounts
+  (`test_pager_mcp_is_built_the_way_resolve_targets_builds_an_openapi_source`).
+- Each source kind has an end-to-end test: stdio in `test_serve_end_to_end_over_a_stdio_backend`,
+  openapi in `test_pager_tools_reach_the_http_api`, and http in
+  `test_an_http_source_carries_mrtr_and_redaction_to_a_live_backend`, which runs OpsDesk over
+  Streamable HTTP as a subprocess and drives an MRTR restart and a redacted result through the proxy.
+- `mcp-gateway serve`, the Pager demo and `opsdesk-server` bind through one `listen(host, port)`
+  helper (a copy in each package, since they share no code): the address family follows the host, so
+  `--host ::1` works and is announced as `http://[::1]:<port>`, and a port in use is a one-line exit
+  instead of a traceback (`test_listens_on_an_ipv6_host`,
+  `test_pager_reports_a_port_in_use_without_a_traceback`,
+  `test_a_port_in_use_is_reported_without_a_traceback`).
 - A test pins the OpenAPI spec to the routes, so the MCP tools generated from it cannot drift from
   the API (`test_spec_matches_the_routes_and_success_statuses`).
 

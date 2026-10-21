@@ -177,10 +177,23 @@ def test_a_write_that_completes_in_the_same_tick_as_a_torn_read_is_loaded(regist
     assert holder.refresh() is False
 
 
-def test_a_broken_file_is_parsed_and_logged_once(
+def _count_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    reads: list[Path] = []
+    read_bytes = Path.read_bytes
+
+    def counting_read(self: Path) -> bytes:
+        reads.append(self)
+        return read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read)
+    return reads
+
+
+def test_a_broken_file_is_read_parsed_and_logged_once(
     registry_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    # Every request refreshes, so a file that stays broken must not be parsed or logged per request.
+    # Every request refreshes, so a file that stays broken must not be read, parsed or logged per
+    # request: the refresh runs in the event loop, and a read is only cheap on a local disk.
     registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
     _set_mtime(registry_path, 1_700_000_000_000_000_000)
     holder = RegistryHolder(registry_path)
@@ -192,23 +205,50 @@ def test_a_broken_file_is_parsed_and_logged_once(
         return parse(path, raw)
 
     monkeypatch.setattr(registry_module, "_parse_registry", counting_parse)
+    reads = _count_reads(monkeypatch)
     registry_path.write_text("servers: [unclosed\n")
     _set_mtime(registry_path, 1_700_000_001_000_000_000)
     with caplog.at_level(logging.ERROR, logger="gateway.registry"):
         for _ in range(5):
             assert holder.refresh() is False
+    assert len(reads) == 1
     assert len(parses) == 1
     assert len(caplog.records) == 1
 
-    # A different broken file under the same mtime is a new error: parsed and logged once more.
+    # A different broken file under the same mtime has another size: a new error, read, parsed and
+    # logged once more.
     registry_path.write_text("- just\n- a list\n")
     _set_mtime(registry_path, 1_700_000_001_000_000_000)
     with caplog.at_level(logging.ERROR, logger="gateway.registry"):
         for _ in range(5):
             assert holder.refresh() is False
+    assert len(reads) == 2
     assert len(parses) == 2
     assert len(caplog.records) == 2
     assert "opsdesk" in holder.current.servers
+
+
+def test_ignored_content_under_the_good_mtime_is_read_once_while_an_error_is_pending(
+    registry_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # While an error is pending, content under the last good mtime is read to see whether the good
+    # bytes are back. Other content stays ignored, and must not be read again until its stat changes.
+    good_at = 1_700_000_000_000_000_000
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    _set_mtime(registry_path, good_at)
+    holder = RegistryHolder(registry_path)
+    registry_path.write_text("servers: [unclosed\n")
+    _set_mtime(registry_path, 1_700_000_001_000_000_000)
+    assert holder.refresh() is False
+    reads = _count_reads(monkeypatch)
+    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True}}}
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
+    _set_mtime(registry_path, good_at)
+    for _ in range(5):
+        assert holder.refresh() is False
+    assert len(reads) == 1
+    assert holder.last_error is not None
+    assert holder.current.servers["opsdesk"].is_enabled("restart_service") is False
 
 
 @pytest.mark.parametrize("break_it", ["overwrite", "delete"])

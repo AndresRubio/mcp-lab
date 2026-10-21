@@ -6,7 +6,6 @@ mcp-gateway audit --registry registry.yaml
 
 import argparse
 import logging
-import socket
 import sys
 from pathlib import Path
 
@@ -15,23 +14,17 @@ import uvicorn
 from fastmcp import Client
 
 from gateway.app import SpecError, build_gateway_servers, create_app, resolve_targets
+from gateway.listen import BindError, base_url, listen
 from gateway.registry import RegistryError, RegistryHolder, load_registry
-
-
-class BindError(Exception):
-    """The listening socket could not be bound, for example because the port is in use."""
 
 
 def serve(registry_path: Path, host: str, port: int) -> None:
     holder = RegistryHolder(registry_path)
-    targets = resolve_targets(holder.current)
+    targets = resolve_targets(holder.current, spec_dir=registry_path.parent)
     app = create_app(build_gateway_servers(holder, targets), on_shutdown=targets.aclose)
     # Bind before announcing, so `--port 0` reports the real port and nobody races for it.
-    try:
-        sock = socket.create_server((host, port))
-    except OSError as err:
-        raise BindError(f"cannot listen on {host}:{port}: {err}") from err
-    base = f"http://{host}:{sock.getsockname()[1]}"
+    sock = listen(host, port)
+    base = base_url(host, sock.getsockname()[1])
     lines = [
         f"Gateway listening on {base}",
         *(f"  {name}: {base}/{name}/mcp" for name in holder.current.servers),
@@ -43,7 +36,7 @@ def serve(registry_path: Path, host: str, port: int) -> None:
 async def audit(registry_path: Path) -> None:
     """Print, per server, the backend tools the registry does not list: they await review."""
     registry = load_registry(registry_path)
-    targets = resolve_targets(registry)
+    targets = resolve_targets(registry, spec_dir=registry_path.parent)
     try:
         for name, target in targets.items():
             entry = registry.servers[name]

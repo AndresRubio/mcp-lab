@@ -1,6 +1,9 @@
 """The gateway's data plane in memory: a registry-filtered proxy per backend."""
 
-from collections.abc import Callable
+import re
+import sys
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import Any
 
@@ -9,11 +12,13 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 
+from gateway.app import build_gateway_servers, resolve_targets
 from gateway.registry import RegistryHolder
 from opsdesk.data import OpsDeskStore
 
 pytestmark = pytest.mark.anyio
 
+Announced = Callable[..., AbstractContextManager[re.Match[str]]]
 WriteRegistry = Callable[[Any], Path]
 
 
@@ -126,3 +131,34 @@ async def test_pager_tools_reach_the_http_api(servers: dict[str, FastMCP]) -> No
     async with Client(servers["pager"]) as client:
         sent = await client.call_tool("send_page", {"service": "api", "message": "5xx"})
     assert sent.structured_content == {"id": 1, "service": "api", "message": "5xx"}
+
+
+@pytest.fixture
+def opsdesk_over_http(announced: Announced) -> Iterator[str]:
+    """OpsDesk as a Streamable HTTP subprocess: the URL a `kind: http` source would name."""
+    command = [sys.executable, "-m", "opsdesk", "--transport", "http", "--port", "0"]
+    with announced(command, r"OpsDesk listening on (http://\S+/mcp)") as match:
+        yield match.group(1)
+
+
+async def test_an_http_source_carries_mrtr_and_redaction_to_a_live_backend(
+    opsdesk_over_http: str, write_registry: WriteRegistry, registry_data: dict[str, Any]
+) -> None:
+    # The other two source kinds have end-to-end tests; this is the one for `kind: http`.
+    registry_data["servers"]["opsdesk"]["source"] = {"kind": "http", "url": opsdesk_over_http}
+    holder = RegistryHolder(write_registry(registry_data))
+    targets = resolve_targets(holder.current)
+    try:
+        server = build_gateway_servers(holder, {"opsdesk": targets["opsdesk"]})["opsdesk"]
+        async with Client(server, elicitation_handler=_confirm) as client:
+            assert "update_runbook" not in {t.name for t in await client.list_tools()}
+            restarted = await client.call_tool("restart_service", {"service": "search"})
+            incidents = await client.call_tool("list_incidents", {})
+            status = await client.call_tool("get_service_status", {"service": "search"})
+    finally:
+        await targets.aclose()
+    assert restarted.structured_content == {"service": "search", "restarted": True, "state": "healthy"}
+    assert status.structured_content == {"name": "search", "state": "healthy", "restarts": 1}
+    assert incidents.structured_content is not None
+    assert "@example.com" not in str(incidents.structured_content)
+    assert "[REDACTED:email]" in str(incidents.structured_content)
