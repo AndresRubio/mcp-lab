@@ -179,7 +179,11 @@ Streamable HTTP spec requires against DNS rebinding. Each `http_app` is built wi
 `test_a_forged_origin_is_rejected`, `test_a_loopback_request_with_its_own_host_is_served`,
 `test_healthz_rejects_a_forged_host`, `test_healthz_rejects_a_forged_origin`,
 `test_healthz_serves_a_loopback_request_with_its_own_host`). Unknown paths get a plain 404 and a
-non-GET `/healthz` a 405 before any check runs; neither response carries data. FastMCP's
+non-GET `/healthz` a 405 before any check runs; neither response carries data. When the request's
+`Host` is loopback, the guard also accepts any loopback `Origin` on any scheme and port, so a page
+served from `http://localhost:3000` passes. A browser still cannot use that: the endpoint takes only
+`application/json` bodies, which need a CORS preflight, and the preflight `OPTIONS` gets a 405 with
+no `Access-Control-Allow-Origin` header. FastMCP's
 "auto" mode checks only requests whose connection arrived on a loopback address (the ASGI `server`
 address that uvicorn reports per connection), so with `--host 0.0.0.0` a request over 127.0.0.1 is
 still checked while one that arrives on any other interface skips the Host check, and skips the Origin
