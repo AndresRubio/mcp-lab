@@ -26,6 +26,21 @@ jobs:
       # problems in our async code.
       - run: uv run python -X dev -m pytest
 
+  ascii-locale:
+    # The same suite under a locale whose encoding is ASCII, so a file read or written without an
+    # explicit encoding fails here instead of on an operator's machine. PYTHONUTF8=0 and
+    # PYTHONCOERCECLOCALE=0 stop Python from quietly switching the C locale back to UTF-8.
+    runs-on: ubuntu-latest
+    env:
+      LC_ALL: C
+      PYTHONUTF8: "0"
+      PYTHONCOERCECLOCALE: "0"
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: astral-sh/setup-uv@v10.3.0
+      - run: uv sync --locked
+      - run: uv run python -X dev -m pytest
+
   protocol:
     runs-on: ubuntu-latest
     steps:

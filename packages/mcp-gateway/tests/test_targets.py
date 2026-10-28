@@ -1,5 +1,7 @@
 import json
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -126,6 +128,25 @@ def test_a_relative_spec_path_is_resolved_against_the_registry_directory(
     source = {"kind": "openapi", "spec": "pager.json", "base_url": "http://pager.invalid"}
     [target] = resolve_targets(_registry(source), spec_dir=registry_dir).values()
     assert isinstance(target, FastMCP)
+
+
+def test_a_spec_file_is_read_as_utf8_whatever_the_locale_says(tmp_path: Path) -> None:
+    # A spec written in UTF-8 on one machine is loaded on another whose locale is not UTF-8.
+    # The read happens in a subprocess forced to an ASCII locale: in-process the test's own
+    # interpreter already runs under UTF-8 and could not fail.
+    path = tmp_path / "pager.json"
+    spec = {"openapi": "3.1.0", "info": {"title": "Pager", "version": "1", "description": "Páginas"}}
+    path.write_bytes(json.dumps(spec, ensure_ascii=False).encode("utf-8"))
+    env = os.environ | {"LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0"}
+    code = (
+        "import json, locale, sys\n"
+        "from gateway.app import load_openapi_spec\n"
+        "assert locale.getencoding().lower() not in ('utf-8', 'utf8'), locale.getencoding()\n"
+        "print(json.dumps(load_openapi_spec(sys.argv[1])['info']['description']))\n"
+    )
+    done = subprocess.run([sys.executable, "-c", code, str(path)], env=env, capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == "Páginas"
 
 
 def test_a_missing_relative_spec_is_reported_with_its_resolved_path(tmp_path: Path) -> None:
