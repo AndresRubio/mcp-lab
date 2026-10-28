@@ -168,7 +168,9 @@ class RegistryHolder:
     The mtime is recorded only once a load succeeds. A file read mid-write can be broken and then
     finish under the same mtime, so while an error is pending the file is read again whenever its
     stat (mtime and size) differs from the content last read and not installed; the same stat is
-    not read again, since `refresh()` runs in the event loop on every request. The digest of the
+    not read again, since `refresh()` runs in the event loop on every request. A read that fails
+    to open the file is the exception: it is retried on every request, since the fix (a permission
+    or the file put back) changes neither mtime nor size. The digest of the
     rejected bytes is kept too, so the same broken bytes are never parsed or logged twice. While an
     error is pending, a file whose stat and bytes match the last good load again clears the error
     without installing anything.

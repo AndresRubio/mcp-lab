@@ -1,6 +1,7 @@
 """OpsDesk over Streamable HTTP, including raw requests that check 2026-07-28 wire rules."""
 
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -176,6 +177,15 @@ async def test_serves_on_an_ipv6_host() -> None:
         assert url.startswith("http://[::1]:")
         async with Client(url) as client:
             assert client.protocol_version == PROTOCOL
+
+
+def test_a_hostname_serves_ipv4_clients() -> None:
+    # `--host localhost` must still accept a client that connects to 127.0.0.1, whichever
+    # address family the name resolves to first on this host.
+    with _http_server("--host", "localhost") as url:
+        port = int(url.rsplit(":", 1)[1].split("/", 1)[0])
+        with socket.create_connection(("127.0.0.1", port), timeout=5):
+            pass
 
 
 def test_a_port_in_use_is_reported_without_a_traceback() -> None:

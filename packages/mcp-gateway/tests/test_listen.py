@@ -33,6 +33,16 @@ def test_listens_on_an_ipv4_host() -> None:
         assert base_url("127.0.0.1", port) == f"http://127.0.0.1:{port}"
 
 
+def test_a_hostname_binds_ipv4_when_it_has_an_ipv4_address() -> None:
+    # `localhost` resolves to `::1` first on many hosts. An IPv6-only socket there would refuse
+    # every client that connects to 127.0.0.1, which is what the old IPv4-only bind accepted.
+    with listen("localhost", 0) as sock:
+        assert sock.family == socket.AF_INET
+        port = sock.getsockname()[1]
+        with socket.create_connection(("127.0.0.1", port), timeout=5):
+            pass
+
+
 def test_a_port_in_use_is_a_bind_error_naming_the_address() -> None:
     with socket.create_server(("127.0.0.1", 0)) as taken:
         port = taken.getsockname()[1]

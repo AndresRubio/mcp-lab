@@ -16,13 +16,14 @@ class BindError(Exception):
 def listen(host: str, port: int) -> socket.socket:
     """A bound, listening TCP socket on `host:port`; port 0 picks a free port.
 
-    The address family follows the host (`::1` is IPv6), and a failed bind is a `BindError` naming
-    the address. The gateway package has the same helper; the two packages share no code.
+    The address family follows the host (`::1` is IPv6); a name binds IPv4 when it has an IPv4
+    address, so `localhost` serves clients of 127.0.0.1 where it resolves to `::1` first. A failed
+    bind is a `BindError` naming the address. The gateway package has the same helper; the two
+    packages share no code.
     """
     try:
-        [(family, *_), *_] = socket.getaddrinfo(
-            host or None, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
-        )
+        infos = socket.getaddrinfo(host or None, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
+        family = next((f for f, *_ in infos if f == socket.AF_INET), infos[0][0])
         return socket.create_server((host, port), family=family)
     except OSError as err:
         raise BindError(f"cannot listen on {host}:{port}: {err}") from err
