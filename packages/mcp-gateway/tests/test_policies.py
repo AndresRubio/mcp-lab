@@ -178,6 +178,18 @@ async def test_rate_limit_changes_apply_live(
     assert result.is_error is False
 
 
+async def test_known_gap_resource_reads_and_prompt_gets_are_not_rate_limited(limited: FastMCP) -> None:
+    # The limit counts executed tool calls only. If this fails, the gap closed: update docs/notes/m2a.md.
+    async with Client(limited, client_info=_as("alice")) as client:
+        for _ in range(2):
+            await client.call_tool("list_incidents", {})
+        for _ in range(5):
+            await client.read_resource("runbook://api")
+            await client.get_prompt("postmortem", {"incident_id": "INC-101"})
+        with pytest.raises(ToolError, match="Rate limit exceeded"):
+            await client.call_tool("list_incidents", {})
+
+
 async def test_servers_without_a_rate_limit_are_unlimited(opsdesk: FastMCP) -> None:
     async with Client(opsdesk) as client:
         results = [await client.call_tool("list_incidents", {}) for _ in range(5)]

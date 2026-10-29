@@ -236,7 +236,7 @@ check unless its Host header is loopback. Binding beyond loopback should therefo
 - A test pins the OpenAPI spec to the routes, so the MCP tools generated from it cannot drift from
   the API (`test_spec_matches_the_routes_and_success_statuses`).
 
-## Known gaps (the first two are pinned by a characterization test)
+## Known gaps (the ones naming a `test_known_gap_` test are pinned by it)
 - `subscriptions/listen` is not proxied. FastMCP 4.1's low-level server registers no handler, so the
   client gets `Method not found`, and OpsDesk's runbook-updated events never reach it
   (`test_known_gap_subscriptions_listen_is_not_proxied`). A workaround exists (register the SDK's
@@ -248,6 +248,16 @@ check unless its Host header is loopback. Binding beyond loopback should therefo
   turns the test red), but it cannot forward the backend's.
 - The registry governs tools only. Resources and prompts of a listed server are ungoverned.
 - stdio backends share one process across every caller (see MRTR above).
+- Rate limits cover tool calls only. Resource reads and prompt gets are not counted and not limited,
+  even for a caller already over the limit
+  (`test_known_gap_resource_reads_and_prompt_gets_are_not_rate_limited`).
+- A `stdio` source's `command` runs in the gateway's working directory, while a relative `spec:` path
+  is resolved against the registry's directory
+  (`test_known_gap_a_stdio_command_runs_in_the_gateway_working_directory`,
+  `test_a_relative_spec_path_is_resolved_against_the_registry_directory`). The demo registry's
+  `uv run opsdesk-server` therefore works only when `mcp-gateway serve` starts inside the repository,
+  where `uv` finds the workspace from the working directory. Started elsewhere, `audit` reports
+  OpsDesk as unreachable.
 - Rate limits trust a self-asserted caller name, and a sealed `requestState` can be replayed within
   its 600 seconds. Both wait for M2b.
 - `GET /healthz` is unauthenticated and lists the server names. M2b should revisit it.

@@ -263,6 +263,31 @@ async def test_audit_leaves_no_backend_process_behind(
     assert not _alive(pid)
 
 
+def test_known_gap_a_stdio_command_runs_in_the_gateway_working_directory(
+    write_registry: WriteRegistry,
+    registry_data: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # A relative `spec:` is resolved against the registry's directory; a stdio `command` is not.
+    cwd_file = tmp_path / "cwd"
+    boot = (
+        f"import os; open({str(cwd_file)!r}, 'w').write(os.getcwd())\n"
+        "from opsdesk.__main__ import main; main([])"
+    )
+    data = _stdio_registry(registry_data)
+    data["servers"]["opsdesk"]["source"]["command"] = [sys.executable, "-c", boot]
+    path = write_registry(data)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    main(["audit", "--registry", str(path)])
+    capfd.readouterr()
+    assert path.parent != elsewhere
+    assert Path(cwd_file.read_text()) == elsewhere.resolve()
+
+
 def test_audit_loads_a_spec_relative_to_the_registry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
