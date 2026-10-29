@@ -25,6 +25,8 @@ jobs:
       - run: uv sync --locked
       # Lint, format, types and the tests under `python -X dev`: the same command as locally.
       - run: ./scripts/check.sh
+      # GitHub's Ubuntu runners ship shellcheck.
+      - run: shellcheck scripts/*.sh
 
   ascii-locale:
     # The same check under a locale whose encoding is ASCII. In every job, check.sh's
