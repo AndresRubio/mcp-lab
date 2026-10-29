@@ -26,11 +26,14 @@ A tool the registry does not list is hidden, and a listed tool is disabled unles
 `tools/list`, and calling it returns the same `Unknown tool: '<name>'` tool error as a tool that does
 not exist, so a caller cannot probe for it (`test_disabled_tool_is_not_callable`,
 `test_unlisted_tool_is_hidden_and_unknown`). A server removed from the YAML exposes nothing until the
-restart that unmounts it (`test_server_removed_from_registry_exposes_nothing_until_restart`).
+restart that unmounts it: its tools, resources, resource templates and prompts all list empty, a
+resource read fails with `Resource not found` and a `prompts/get` with `Unknown prompt`, as they do
+for names that do not exist. Put back in the YAML, the server serves them again
+(`test_server_removed_from_registry_exposes_nothing_until_restart`).
 
-**Known gap: the registry governs tools only.** Resources and prompts pass through ungoverned: the
-registry cannot hide or disable them, and no owner is recorded for them. They are redacted like
-everything else (see below), but a reviewer sees nothing about them.
+**Known gap: the registry governs tools only.** While a server is listed, its resources and prompts
+pass through ungoverned: the registry cannot hide or disable them one by one, and no owner is recorded
+for them. They are redacted like everything else (see below), but a reviewer sees nothing about them.
 
 ## Why hot reload goes through a transform
 - `RegistryHolder.refresh()` reloads when the file's `st_mtime_ns` changes. If the new YAML is
@@ -53,8 +56,10 @@ everything else (see below), but a reviewer sees nothing about them.
   anything (`test_restoring_the_good_file_with_its_mtime_clears_the_error`).
 - The middleware calls `refresh()` at the start of every request
   (`test_each_request_refreshes_the_registry`).
-- `RegistryVisibility` reads `holder.current` on every `list_tools` and `get_tool`, so a reload needs
-  nothing rebuilt or mutated (`test_hot_reload_flips_visibility_without_rebuild`).
+- `RegistryVisibility` reads `holder.current` on every list and get of tools, resources, resource
+  templates and prompts, so a reload needs nothing rebuilt or mutated
+  (`test_hot_reload_flips_visibility_without_rebuild`,
+  `test_server_removed_from_registry_exposes_nothing_until_restart`).
 - `FastMCP.enable()` and `disable()` only append `Visibility` transforms, and no API removes one.
   Toggling a tool ten times would stack ten transforms.
 - A transform also hides the tool from `get_tool`, which the call path and any catalog or search
@@ -230,7 +235,7 @@ check unless its Host header is loopback. Binding beyond loopback should therefo
   gateway answers `ttlMs: 0, private` (`test_known_gap_upstream_cache_hints_are_dropped`). The gateway
   could declare its own hint (`create_proxy(..., cache_ttl=60, cache_scope="public")`; that mutation
   turns the test red), but it cannot forward the backend's.
-- The registry governs tools only. Resources and prompts are ungoverned.
+- The registry governs tools only. Resources and prompts of a listed server are ungoverned.
 - stdio backends share one process across every caller (see MRTR above).
 - Rate limits trust a self-asserted caller name, and a sealed `requestState` can be replayed within
   its 600 seconds. Both wait for M2b.
