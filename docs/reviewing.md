@@ -17,8 +17,10 @@ pushes and posts nothing.
    A test that proves a fix fails there. One that passes is a drift guard or coverage, and the
    report says which. A collection error names an import the base lacks, which counts as a fail.
    The interpreter and the dependencies are the checkout's, so run it from a checkout at HEAD
-   (the script warns otherwise). Tests of a package the base does not have are left out with a
-   warning: they have no old code to run against. Done when every new test is classified.
+   (the script warns otherwise); a test that starts `uv run` gets the same venv. A test path is
+   relative to the repository root. Tests of a package are left out with a warning when the base
+   lacks its `src/` or a top-level module in it: they would run the checkout's code and pass for
+   the wrong reason. Done when every new test is classified.
 5. Verify each candidate finding with a command, a scratch test or a quoted line, and drop what
    cannot be shown. A platform claim names the platform it ran on, or carries the word
    "unverified". Done when every finding that stays has its evidence written next to it.
