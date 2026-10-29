@@ -1,14 +1,27 @@
+from collections.abc import Awaitable, Callable
+
 import pytest
 from mcp import Client
+from mcp.server.caching import CACHEABLE_METHODS
 from mcp.server.mcpserver import MCPServer
-from mcp.types import TextContent
+from mcp.types import CacheableResult, TextContent
 
 pytestmark = pytest.mark.anyio
 
+LIST_CALLS: dict[str, Callable[[Client], Awaitable[CacheableResult]]] = {
+    "tools/list": lambda client: client.list_tools(),
+    "prompts/list": lambda client: client.list_prompts(),
+    "resources/list": lambda client: client.list_resources(),
+    "resources/templates/list": lambda client: client.list_resource_templates(),
+}
 
-async def test_tools_list_carries_public_cache_hint(server: MCPServer) -> None:
+
+# Parametrized over the SDK's cacheable list methods, so a list method without an entry in
+# LIST_CALLS fails with a KeyError instead of going untested.
+@pytest.mark.parametrize("method", sorted(m for m in CACHEABLE_METHODS if m.endswith("/list")))
+async def test_every_list_result_carries_public_60s_cache_hint(server: MCPServer, method: str) -> None:
     async with Client(server) as client:
-        result = await client.list_tools()
+        result = await LIST_CALLS[method](client)
     assert (result.ttl_ms, result.cache_scope) == (60_000, "public")
 
 
