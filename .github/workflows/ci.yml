@@ -23,9 +23,12 @@ jobs:
       - run: ./scripts/check.sh
 
   ascii-locale:
-    # The same check under a locale whose encoding is ASCII, so a file read or written without an
-    # explicit encoding fails here instead of on an operator's machine. PYTHONUTF8=0 and
-    # PYTHONCOERCECLOCALE=0 stop Python from quietly switching the C locale back to UTF-8.
+    # The same check under a locale whose encoding is ASCII. In every job, check.sh's
+    # `-X warn_default_encoding` fails each text read or write without an explicit encoding,
+    # whatever the data. This job adds the locale: a read or write without an encoding that handles
+    # non-ASCII data fails here too, including in child processes the flag does not reach. ASCII
+    # data passes under this locale. PYTHONUTF8=0 and PYTHONCOERCECLOCALE=0 stop Python from
+    # quietly switching the C locale back to UTF-8.
     runs-on: ubuntu-latest
     env:
       LC_ALL: C

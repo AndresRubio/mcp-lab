@@ -43,7 +43,7 @@ def write_registry(registry_path: Path) -> Callable[[Any], Path]:
 
     def write(data: Any) -> Path:
         text = data if isinstance(data, str) else yaml.safe_dump(data)
-        registry_path.write_text(text)
+        registry_path.write_text(text, encoding="utf-8")
         generation[0] += 1
         stamp = 1_700_000_000_000_000_000 + generation[0] * 1_000_000_000
         os.utime(registry_path, ns=(stamp, stamp))
@@ -117,8 +117,11 @@ def _announced(args: list[str], pattern: str, timeout: float = 20) -> Iterator[r
     stderr goes to a file, not a PIPE: an undrained pipe blocks the child once it fills. The parent
     reads through its own handle, so it never moves the child's write offset.
     """
-    with tempfile.NamedTemporaryFile(mode="w") as out, open(out.name) as log:
-        proc = subprocess.Popen(args, stderr=out, stdout=subprocess.DEVNULL, text=True)
+    with (
+        tempfile.NamedTemporaryFile(mode="w", encoding="utf-8") as out,
+        open(out.name, encoding="utf-8") as log,
+    ):
+        proc = subprocess.Popen(args, stderr=out, stdout=subprocess.DEVNULL, text=True, encoding="utf-8")
         try:
             deadline = time.monotonic() + timeout
             output = ""

@@ -289,7 +289,7 @@ async def test_shutdown_stops_the_stdio_backend_and_closes_the_http_client(tmp_p
     # The transport exposes no public pid, so the backend records its own before serving.
     pid_file = tmp_path / "pid"
     boot = (
-        f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        f"import os; open({str(pid_file)!r}, 'w', encoding='utf-8').write(str(os.getpid()))\n"
         "from opsdesk.__main__ import main; main([])"
     )
     registry = Registry.model_validate(
@@ -312,7 +312,7 @@ async def test_shutdown_stops_the_stdio_backend_and_closes_the_http_client(tmp_p
         }
     )
     registry_file = tmp_path / "registry.yaml"
-    registry_file.write_text(json.dumps(registry.model_dump(mode="json")))
+    registry_file.write_text(json.dumps(registry.model_dump(mode="json")), encoding="utf-8")
     targets = resolve_targets(registry)
     [client] = targets.clients
     gateway = create_app(
@@ -320,7 +320,7 @@ async def test_shutdown_stops_the_stdio_backend_and_closes_the_http_client(tmp_p
     )
     async with run_asgi_lifespan(gateway), _client(gateway, "opsdesk") as mcp:
         assert "list_incidents" in {t.name for t in await mcp.list_tools()}
-        pid = int(pid_file.read_text())
+        pid = int(pid_file.read_text(encoding="utf-8"))
         assert _alive(pid)
         assert not client.is_closed
     deadline = time.monotonic() + 10
