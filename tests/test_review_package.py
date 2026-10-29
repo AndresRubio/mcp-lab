@@ -79,3 +79,30 @@ def test_package_warns_when_the_branch_and_base_have_more_than_one_merge_base(tm
 
     assert "add f2.txt" in package
     assert "2 merge bases" in package
+
+
+def test_package_refuses_refs_that_share_no_history(tmp_path: Path) -> None:
+    # An orphan branch, or a shallow clone cut above the fork point, leaves no merge base. The
+    # script must say so and name both refs, not exit with no message and no file.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _commit(repo, "shared.txt", "shared\n")
+    _git(repo, "checkout", "-q", "--orphan", "unrelated")
+    _commit(repo, "other.txt", "no common history\n")
+
+    out = tmp_path / "package.md"
+    done = subprocess.run(
+        [str(SCRIPT), "main", "unrelated", str(out)],
+        cwd=repo,
+        env=GIT_ENV,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert done.returncode == 2
+    assert "no merge base" in done.stderr
+    assert "main" in done.stderr
+    assert "unrelated" in done.stderr
+    assert not out.exists()
