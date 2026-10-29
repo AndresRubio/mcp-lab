@@ -73,6 +73,35 @@ def test_audit_reports_unlisted_backend_tools(
     assert any(re.fullmatch(r"down \(owner: nobody\): unreachable: .+", line) for line in lines)
 
 
+def test_audit_reports_a_stale_disabled_entry_and_exits_0(
+    write_registry: WriteRegistry, registry_data: dict[str, Any], capfd: pytest.CaptureFixture[str]
+) -> None:
+    data = _stdio_registry(registry_data)
+    data["servers"]["opsdesk"]["tools"]["List_Incidents"] = {"enabled": False, "owner": "oncall-team"}
+    main(["audit", "--registry", str(write_registry(data))])  # returns: exit status 0
+    assert capfd.readouterr().out.splitlines() == [
+        "opsdesk (owner: oncall-team): every tool is reviewed",
+        "opsdesk (owner: oncall-team): listed but not offered: List_Incidents",
+    ]
+
+
+def test_audit_reports_a_stale_enabled_entry_and_exits_1(
+    write_registry: WriteRegistry, registry_data: dict[str, Any], capfd: pytest.CaptureFixture[str]
+) -> None:
+    # An enabled entry for a tool the backend lacks goes live, unreviewed, once a backend ships it.
+    data = _stdio_registry(registry_data)
+    tools = data["servers"]["opsdesk"]["tools"]
+    tools["List_Incidents"] = {"enabled": True, "owner": "oncall-team"}
+    tools["export_audit_log"] = {"enabled": False, "owner": "oncall-team"}
+    with pytest.raises(SystemExit) as exc:
+        main(["audit", "--registry", str(write_registry(data))])
+    assert exc.value.code == 1
+    assert capfd.readouterr().out.splitlines() == [
+        "opsdesk (owner: oncall-team): every tool is reviewed",
+        "opsdesk (owner: oncall-team): listed but not offered: List_Incidents (enabled), export_audit_log",
+    ]
+
+
 @pytest.mark.skipif(shutil.which("uv") is None, reason="the demo registry launches OpsDesk with `uv run`")
 def test_audit_of_the_demo_registry(capfd: pytest.CaptureFixture[str]) -> None:
     main(["audit", "--registry", str(DEMO_REGISTRY)])

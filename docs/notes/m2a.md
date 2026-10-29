@@ -18,11 +18,20 @@ and rate-limits each caller.
   code change.
 - `mcp-gateway audit` connects to every backend and prints the tools the registry does not list
   ("pending review"). That is how a newly shipped tool reaches a reviewer
-  (`test_audit_reports_unlisted_backend_tools`).
+  (`test_audit_reports_unlisted_backend_tools`). It also prints, on a second line per server, the
+  listed tools the backend does not offer ("listed but not offered"), with `(enabled)` after each
+  enabled one. A disabled entry of that kind is a cleanup item and the audit exits 0
+  (`test_audit_reports_a_stale_disabled_entry_and_exits_0`). An enabled one makes the audit exit 1,
+  since the tool would go live unreviewed the moment a backend ships it under that name
+  (`test_audit_reports_a_stale_enabled_entry_and_exits_1`). `serve` does not check this. The demo
+  registry prints its two lines and exits 0 (`test_audit_of_the_demo_registry`).
 
 ## Disabled by default
 A tool the registry does not list is hidden, and a listed tool is disabled unless it says
-`enabled: true`. Enabling a tool is a reviewed edit to the YAML. A hidden tool is absent from
+`enabled: true`. Enabling a tool is a reviewed edit to the YAML. An entry for a tool the backend does
+not yet offer, such as a typo or a tool listed before it ships, would start switched on if it says
+`enabled: true`, so `mcp-gateway audit` reports it and exits 1
+(`test_audit_reports_a_stale_enabled_entry_and_exits_1`). A hidden tool is absent from
 `tools/list`, and calling it returns the same `Unknown tool: '<name>'` tool error as a tool that does
 not exist, so a caller cannot probe for it (`test_disabled_tool_is_not_callable`,
 `test_unlisted_tool_is_hidden_and_unknown`). A server removed from the YAML exposes nothing until the

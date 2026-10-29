@@ -2,6 +2,8 @@
 
 mcp-gateway serve --registry registry.yaml [--host 127.0.0.1] [--port 8080]
 mcp-gateway audit --registry registry.yaml
+
+`audit` exits with status 1 when the registry enables a tool that its backend does not offer.
 """
 
 import argparse
@@ -33,10 +35,16 @@ def serve(registry_path: Path, host: str, port: int) -> None:
     uvicorn.Server(uvicorn.Config(app, log_level="warning")).run(sockets=[sock])
 
 
-async def audit(registry_path: Path) -> None:
-    """Print, per server, the backend tools the registry does not list: they await review."""
+async def audit(registry_path: Path) -> bool:
+    """Print, per server, the backend tools the registry does not list: they await review.
+
+    Also print the listed tools the backend does not offer (a stale name, a typo, a tool listed
+    before it ships), marking the enabled ones: such a tool goes live unreviewed the moment a
+    backend ships it under that name. Returns True when any such entry is enabled.
+    """
     registry = load_registry(registry_path)
     targets = resolve_targets(registry, spec_dir=registry_path.parent)
+    enabled_but_not_offered = False
     try:
         for name, target in targets.items():
             entry = registry.servers[name]
@@ -52,8 +60,14 @@ async def audit(registry_path: Path) -> None:
                 print(f"{label}: pending review: {', '.join(pending)}")
             else:
                 print(f"{label}: every tool is reviewed")
+            stale = [tool for tool in entry.tools if tool not in offered]
+            if stale:
+                marked = [f"{tool} (enabled)" if entry.is_enabled(tool) else tool for tool in stale]
+                print(f"{label}: listed but not offered: {', '.join(marked)}")
+                enabled_but_not_offered |= any(entry.is_enabled(tool) for tool in stale)
     finally:
         await targets.aclose()
+    return enabled_but_not_offered
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -63,7 +77,9 @@ def main(argv: list[str] | None = None) -> None:
     serve_cmd.add_argument("--registry", type=Path, required=True)
     serve_cmd.add_argument("--host", default="127.0.0.1")
     serve_cmd.add_argument("--port", type=int, default=8080, help="0 picks a free port")
-    audit_cmd = commands.add_parser("audit", help="list backend tools the registry does not cover")
+    audit_cmd = commands.add_parser(
+        "audit", help="report unlisted backend tools and listed tools no backend offers"
+    )
     audit_cmd.add_argument("--registry", type=Path, required=True)
     args = parser.parse_args(argv)
 
@@ -71,8 +87,8 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if args.command == "serve":
             serve(args.registry, args.host, args.port)
-        else:
-            anyio.run(audit, args.registry)
+        elif anyio.run(audit, args.registry):
+            raise SystemExit(1)  # an enabled tool that no backend offers would go live unreviewed
     except (RegistryError, SpecError, BindError) as err:  # operator errors only
         raise SystemExit(f"mcp-gateway: {err}") from err
 
