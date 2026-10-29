@@ -9,7 +9,9 @@ and rate-limits each caller.
 - The control plane is `registry.yaml`, parsed into pydantic models by `gateway.registry`. It records
   who owns each server and tool, which tools are enabled, and each server's rate limit. Unknown keys
   are rejected (`extra="forbid"`), so a typo such as `tols:` fails review instead of silently hiding
-  everything (`test_invalid_entries_are_rejected`).
+  everything (`test_invalid_entries_are_rejected`). `owner` is required on every server and on every
+  listed tool, so a tool entry without one is rejected too (`test_invalid_entries_are_rejected`, case
+  `tool-without-owner`).
 - The data plane is `create_proxy(target)` per backend, plus a `RegistryVisibility` transform and a
   `GatewayPolicyMiddleware`, all mounted in one Starlette app (`gateway.app`). It only reads the
   control plane, through `RegistryHolder.current`.

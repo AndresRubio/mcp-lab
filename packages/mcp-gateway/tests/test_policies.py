@@ -286,7 +286,7 @@ def contacts(write_registry: WriteRegistry, registry_data: dict[str, Any]) -> Fa
     registry_data["servers"]["contacts"] = {
         "owner": "sre",
         "source": {"kind": "stdio", "command": ["contacts"]},
-        "tools": {"owner_card": {"enabled": True}},
+        "tools": {"owner_card": {"enabled": True, "owner": "sre"}},
     }
     holder = RegistryHolder(write_registry(registry_data))
     return build_gateway_servers(holder, {"contacts": _contact_backend()})["contacts"]
