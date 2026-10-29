@@ -37,7 +37,7 @@ async def _accept(context: ClientRequestContext, params: mt.ElicitRequestParams)
 def _pid_recording_opsdesk(pid_file: Path) -> list[str]:
     """An OpsDesk stdio command that writes its PID first: the transport exposes no public pid."""
     boot = (
-        f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        f"import os; open({str(pid_file)!r}, 'w', encoding='utf-8').write(str(os.getpid()))\n"
         "from opsdesk.__main__ import main; main([])"
     )
     return [sys.executable, "-c", boot]
@@ -128,7 +128,7 @@ async def test_serve_end_to_end_over_a_stdio_backend(
             tools = {t.name for t in (await client.list_tools()).tools}
             first = await client.call_tool("restart_service", {"service": "search"})
             again = await client.call_tool("get_service_status", {"service": "search"})
-        pid = int(pid_file.read_text())
+        pid = int(pid_file.read_text(encoding="utf-8"))
         assert _alive(pid)
     # `announced` has sent SIGTERM and waited for the gateway: its stdio backend must be gone too.
     deadline = time.monotonic() + 10
@@ -144,7 +144,7 @@ async def test_serve_end_to_end_over_a_stdio_backend(
 
 def test_serve_refuses_an_invalid_registry(tmp_path: Path) -> None:
     path = tmp_path / "registry.yaml"
-    path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}))
+    path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}), encoding="utf-8")
     with pytest.raises(SystemExit, match=r"registry\.yaml"):
         main(["serve", "--registry", str(path), "--port", "0"])
 
@@ -190,7 +190,7 @@ def test_audit_reports_a_bad_openapi_spec_without_a_traceback(write_registry: Wr
 
 def test_audit_refuses_an_invalid_registry(tmp_path: Path) -> None:
     path = tmp_path / "registry.yaml"
-    path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}))
+    path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}), encoding="utf-8")
     with pytest.raises(SystemExit, match=r"^mcp-gateway: .*registry\.yaml"):
         main(["audit", "--registry", str(path)])
 
@@ -199,7 +199,7 @@ def _malformed_spec_registry(
     write_registry: WriteRegistry, tmp_path: Path, spec_text: str = '{"openapi": "3.1.0", "paths": 5}'
 ) -> Path:
     spec = tmp_path / "bad.json"
-    spec.write_text(spec_text)
+    spec.write_text(spec_text, encoding="utf-8")
     source = {"kind": "openapi", "spec": str(spec), "base_url": "http://127.0.0.1:9"}
     return write_registry({"servers": {"pager": {"owner": "t", "source": source}}})
 
@@ -256,7 +256,7 @@ async def test_audit_leaves_no_backend_process_behind(
     monkeypatch.setattr("gateway.__main__.resolve_targets", resolve_and_hold)
     # Run in this event loop: tearing a loop down would reap a leaked backend and hide the leak.
     await audit(write_registry(data))
-    pid = int(pid_file.read_text())
+    pid = int(pid_file.read_text(encoding="utf-8"))
     deadline = time.monotonic() + 10
     while _alive(pid) and time.monotonic() < deadline:
         await anyio.sleep(0.05)
@@ -273,7 +273,7 @@ def test_known_gap_a_stdio_command_runs_in_the_gateway_working_directory(
     # A relative `spec:` is resolved against the registry's directory; a stdio `command` is not.
     cwd_file = tmp_path / "cwd"
     boot = (
-        f"import os; open({str(cwd_file)!r}, 'w').write(os.getcwd())\n"
+        f"import os; open({str(cwd_file)!r}, 'w', encoding='utf-8').write(os.getcwd())\n"
         "from opsdesk.__main__ import main; main([])"
     )
     data = _stdio_registry(registry_data)
@@ -285,7 +285,7 @@ def test_known_gap_a_stdio_command_runs_in_the_gateway_working_directory(
     main(["audit", "--registry", str(path)])
     capfd.readouterr()
     assert path.parent != elsewhere
-    assert Path(cwd_file.read_text()) == elsewhere.resolve()
+    assert Path(cwd_file.read_text(encoding="utf-8")) == elsewhere.resolve()
 
 
 def test_audit_loads_a_spec_relative_to_the_registry(
@@ -297,10 +297,12 @@ def test_audit_loads_a_spec_relative_to_the_registry(
 
     registry_dir = tmp_path / "etc"
     registry_dir.mkdir()
-    (registry_dir / "pager.json").write_text(json.dumps(SPEC))
+    (registry_dir / "pager.json").write_text(json.dumps(SPEC), encoding="utf-8")
     source = {"kind": "openapi", "spec": "pager.json", "base_url": "http://pager.invalid"}
     registry = registry_dir / "registry.yaml"
-    registry.write_text(yaml.safe_dump({"servers": {"pager": {"owner": "t", "source": source}}}))
+    registry.write_text(
+        yaml.safe_dump({"servers": {"pager": {"owner": "t", "source": source}}}), encoding="utf-8"
+    )
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)

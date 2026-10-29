@@ -12,12 +12,18 @@ GIT_ENV = os.environ | {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": 
 
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", *GIT_IDENTITY, *args], cwd=repo, env=GIT_ENV, check=True, capture_output=True, text=True
+        ["git", *GIT_IDENTITY, *args],
+        cwd=repo,
+        env=GIT_ENV,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
     ).stdout
 
 
 def _commit(repo: Path, name: str, text: str) -> None:
-    (repo / name).write_text(text)
+    (repo / name).write_text(text, encoding="utf-8")
     _git(repo, "add", name)
     _git(repo, "commit", "-q", "-m", f"add {name}")
 
@@ -37,7 +43,7 @@ def test_package_describes_only_the_branch_commits_when_the_base_has_moved_on(tm
     subprocess.run(
         [str(SCRIPT), "main", "feature", str(out)], cwd=repo, env=GIT_ENV, check=True, capture_output=True
     )
-    package = out.read_text()
+    package = out.read_text(encoding="utf-8")
 
     assert "add feature.txt" in package
     assert "add later.txt" not in package
@@ -69,7 +75,34 @@ def test_package_warns_when_the_branch_and_base_have_more_than_one_merge_base(tm
     subprocess.run(
         [str(SCRIPT), "main", "feature", str(out)], cwd=repo, env=GIT_ENV, check=True, capture_output=True
     )
-    package = out.read_text()
+    package = out.read_text(encoding="utf-8")
 
     assert "add f2.txt" in package
     assert "2 merge bases" in package
+
+
+def test_package_refuses_refs_that_share_no_history(tmp_path: Path) -> None:
+    # An orphan branch, or a shallow clone cut above the fork point, leaves no merge base. The
+    # script must say so and name both refs, not exit with no message and no file.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    _commit(repo, "shared.txt", "shared\n")
+    _git(repo, "checkout", "-q", "--orphan", "unrelated")
+    _commit(repo, "other.txt", "no common history\n")
+
+    out = tmp_path / "package.md"
+    done = subprocess.run(
+        [str(SCRIPT), "main", "unrelated", str(out)],
+        cwd=repo,
+        env=GIT_ENV,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert done.returncode == 2
+    assert "no merge base" in done.stderr
+    assert "main" in done.stderr
+    assert "unrelated" in done.stderr
+    assert not out.exists()

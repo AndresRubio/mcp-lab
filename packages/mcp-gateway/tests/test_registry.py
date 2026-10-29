@@ -122,7 +122,7 @@ def test_refresh_ignores_content_change_with_same_mtime(write_registry: WriteReg
     path = write_registry({"servers": {"opsdesk": OPSDESK}})
     holder = RegistryHolder(path)
     stamp = path.stat().st_mtime_ns
-    path.write_text("servers: {}\n")
+    path.write_text("servers: {}\n", encoding="utf-8")
     os.utime(path, ns=(stamp, stamp))
     assert holder.refresh() is False
     assert "opsdesk" in holder.current.servers
@@ -161,18 +161,18 @@ def _set_mtime(path: Path, stamp: int) -> None:
 def test_a_write_that_completes_in_the_same_tick_as_a_torn_read_is_loaded(registry_path: Path) -> None:
     # An editor truncates, the gateway reads the empty file, and the write completes with the same
     # mtime (coarse timestamps). The finished file must still be loaded on the next refresh.
-    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}), encoding="utf-8")
     _set_mtime(registry_path, 1_700_000_000_000_000_000)
     holder = RegistryHolder(registry_path)
     torn_at = 1_700_000_001_000_000_000
 
-    registry_path.write_text("")
+    registry_path.write_text("", encoding="utf-8")
     _set_mtime(registry_path, torn_at)
     assert holder.refresh() is False
     assert holder.last_error is not None
 
     flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True, "owner": "oncall-team"}}}
-    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}), encoding="utf-8")
     _set_mtime(registry_path, torn_at)
     assert holder.refresh() is True
     assert holder.current.servers["opsdesk"].is_enabled("restart_service") is True
@@ -197,7 +197,7 @@ def test_a_broken_file_is_read_parsed_and_logged_once(
 ) -> None:
     # Every request refreshes, so a file that stays broken must not be read, parsed or logged per
     # request: the refresh runs in the event loop, and a read is only cheap on a local disk.
-    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}), encoding="utf-8")
     _set_mtime(registry_path, 1_700_000_000_000_000_000)
     holder = RegistryHolder(registry_path)
     parses: list[Path] = []
@@ -209,7 +209,7 @@ def test_a_broken_file_is_read_parsed_and_logged_once(
 
     monkeypatch.setattr(registry_module, "_parse_registry", counting_parse)
     reads = _count_reads(monkeypatch)
-    registry_path.write_text("servers: [unclosed\n")
+    registry_path.write_text("servers: [unclosed\n", encoding="utf-8")
     _set_mtime(registry_path, 1_700_000_001_000_000_000)
     with caplog.at_level(logging.ERROR, logger="gateway.registry"):
         for _ in range(5):
@@ -220,7 +220,7 @@ def test_a_broken_file_is_read_parsed_and_logged_once(
 
     # A different broken file under the same mtime has another size: a new error, read, parsed and
     # logged once more.
-    registry_path.write_text("- just\n- a list\n")
+    registry_path.write_text("- just\n- a list\n", encoding="utf-8")
     _set_mtime(registry_path, 1_700_000_001_000_000_000)
     with caplog.at_level(logging.ERROR, logger="gateway.registry"):
         for _ in range(5):
@@ -237,15 +237,15 @@ def test_ignored_content_under_the_good_mtime_is_read_once_while_an_error_is_pen
     # While an error is pending, content under the last good mtime is read to see whether the good
     # bytes are back. Other content stays ignored, and must not be read again until its stat changes.
     good_at = 1_700_000_000_000_000_000
-    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}), encoding="utf-8")
     _set_mtime(registry_path, good_at)
     holder = RegistryHolder(registry_path)
-    registry_path.write_text("servers: [unclosed\n")
+    registry_path.write_text("servers: [unclosed\n", encoding="utf-8")
     _set_mtime(registry_path, 1_700_000_001_000_000_000)
     assert holder.refresh() is False
     reads = _count_reads(monkeypatch)
     flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True, "owner": "oncall-team"}}}
-    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}), encoding="utf-8")
     _set_mtime(registry_path, good_at)
     for _ in range(5):
         assert holder.refresh() is False
@@ -262,20 +262,20 @@ def test_restoring_the_good_file_with_its_mtime_clears_the_error(
     # running registry already matches, so nothing is installed, but the error must not linger.
     good_text = yaml.safe_dump({"servers": {"opsdesk": OPSDESK}})
     good_at = 1_700_000_000_000_000_000
-    registry_path.write_text(good_text)
+    registry_path.write_text(good_text, encoding="utf-8")
     _set_mtime(registry_path, good_at)
     holder = RegistryHolder(registry_path)
     good = holder.current
 
     if break_it == "overwrite":
-        registry_path.write_text("servers: [unclosed\n")
+        registry_path.write_text("servers: [unclosed\n", encoding="utf-8")
         _set_mtime(registry_path, 1_700_000_001_000_000_000)
     else:
         registry_path.unlink()
     assert holder.refresh() is False
     assert holder.last_error is not None
 
-    registry_path.write_text(good_text)
+    registry_path.write_text(good_text, encoding="utf-8")
     _set_mtime(registry_path, good_at)
     with caplog.at_level(logging.INFO, logger="gateway.registry"):
         assert holder.refresh() is False
@@ -284,7 +284,7 @@ def test_restoring_the_good_file_with_its_mtime_clears_the_error(
     assert "matches the running registry" in caplog.text
 
     # Broken again under the new mtime: the earlier digest must not hide the new error.
-    registry_path.write_text("servers: [unclosed\n")
+    registry_path.write_text("servers: [unclosed\n", encoding="utf-8")
     _set_mtime(registry_path, 1_700_000_002_000_000_000)
     assert holder.refresh() is False
     assert holder.last_error is not None
@@ -294,14 +294,14 @@ def test_a_same_mtime_change_while_an_error_is_pending_is_still_ignored(registry
     # Guards the documented rule: only an mtime change triggers a load. Reading the file to clear a
     # pending error must not turn into loading other content written under the good file's mtime.
     good_at = 1_700_000_000_000_000_000
-    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}))
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": OPSDESK}}), encoding="utf-8")
     _set_mtime(registry_path, good_at)
     holder = RegistryHolder(registry_path)
-    registry_path.write_text("servers: [unclosed\n")
+    registry_path.write_text("servers: [unclosed\n", encoding="utf-8")
     _set_mtime(registry_path, 1_700_000_001_000_000_000)
     assert holder.refresh() is False
     flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True, "owner": "oncall-team"}}}
-    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
+    registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}), encoding="utf-8")
     _set_mtime(registry_path, good_at)
     assert holder.refresh() is False
     assert holder.current.servers["opsdesk"].is_enabled("restart_service") is False
@@ -319,7 +319,7 @@ def test_deleted_file_keeps_last_good_registry(write_registry: WriteRegistry) ->
 
 def test_initial_load_failure_raises(tmp_path: Path) -> None:
     path = tmp_path / "bad.yaml"
-    path.write_text("servers: [unclosed\n")
+    path.write_text("servers: [unclosed\n", encoding="utf-8")
     with pytest.raises(RegistryError, match=r"bad\.yaml"):
         RegistryHolder(path)
     with pytest.raises(RegistryError, match=r"missing\.yaml"):
