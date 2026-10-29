@@ -705,9 +705,11 @@ name = "mcp-gateway"
 version = "0.1.0"
 source = { editable = "packages/mcp-gateway" }
 dependencies = [
+    { name = "anyio" },
     { name = "fastmcp" },
     { name = "httpx2" },
     { name = "mcp" },
+    { name = "mcp-types" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "starlette" },
@@ -721,9 +723,11 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = "==4.15.1" },
     { name = "fastmcp", specifier = "==4.1.0" },
     { name = "httpx2", specifier = "==2.13.1" },
     { name = "mcp", specifier = "==2.3.0" },
+    { name = "mcp-types", specifier = "==2.3.0" },
     { name = "pydantic", specifier = "==2.14.1" },
     { name = "pyyaml", specifier = "==6.0.3" },
     { name = "starlette", specifier = "==1.8.0" },

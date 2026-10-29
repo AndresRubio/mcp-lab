@@ -298,7 +298,7 @@ async def test_shutdown_stops_the_stdio_backend_and_closes_the_http_client(tmp_p
                 "opsdesk": {
                     "owner": "t",
                     "source": {"kind": "stdio", "command": [sys.executable, "-c", boot]},
-                    "tools": {"list_incidents": {"enabled": True}},
+                    "tools": {"list_incidents": {"enabled": True, "owner": "t"}},
                 },
                 "pager": {
                     "owner": "t",

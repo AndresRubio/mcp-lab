@@ -74,7 +74,7 @@ def registry_data() -> dict[str, Any]:
                     "base_url": "http://pager.local",
                     "mcp_names": MCP_NAMES,
                 },
-                "tools": {name: {"enabled": True} for name in MCP_NAMES.values()},
+                "tools": {name: {"enabled": True, "owner": "sre"} for name in MCP_NAMES.values()},
             },
         }
     }

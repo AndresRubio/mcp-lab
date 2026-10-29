@@ -53,7 +53,7 @@ class RateLimit(_Strict):
 
 class ToolPolicy(_Strict):
     enabled: bool = False
-    owner: str | None = None
+    owner: str  # every listed tool names who reviews it, as every server does
 
 
 class ServerEntry(_Strict):

@@ -2,6 +2,9 @@
 # A tool that is not listed here is hidden, and a listed tool stays disabled unless it says
 # `enabled: true`: enabling a tool is a reviewed edit to this file.
 # Tool enablement, owners and rate limits reload live; adding or removing a server needs a restart.
+# A stdio `command` runs in the gateway's working directory, so `uv run opsdesk-server` below works
+# only when `mcp-gateway serve` starts inside this repository, where uv finds the workspace.
+# A relative `spec:` path is resolved against this file's directory instead.
 servers:
   opsdesk:
     owner: oncall-team

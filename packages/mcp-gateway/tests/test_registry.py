@@ -69,7 +69,7 @@ def test_defaults_are_closed() -> None:
                 "s": {
                     "owner": "team",
                     "source": {"kind": "http", "url": "http://x/mcp"},
-                    "tools": {"listed_without_flag": {}},
+                    "tools": {"listed_without_flag": {"owner": "team"}},
                 }
             }
         }
@@ -77,7 +77,6 @@ def test_defaults_are_closed() -> None:
     entry = registry.servers["s"]
     assert entry.rate_limit is None
     assert entry.tools["listed_without_flag"].enabled is False
-    assert entry.tools["listed_without_flag"].owner is None
 
 
 def test_only_listed_and_enabled_tools_are_enabled() -> None:
@@ -97,6 +96,10 @@ def test_only_listed_and_enabled_tools_are_enabled() -> None:
             id="zero-rate",
         ),
         pytest.param({"owner": "t", "source": {"kind": "http", "url": "x"}, "tols": {}}, id="typo-field"),
+        pytest.param(
+            {"owner": "t", "source": {"kind": "http", "url": "x"}, "tools": {"x": {"enabled": True}}},
+            id="tool-without-owner",
+        ),
     ],
 )
 def test_invalid_entries_are_rejected(server: dict[str, object]) -> None:
@@ -108,7 +111,7 @@ def test_refresh_reloads_when_mtime_changes(write_registry: WriteRegistry) -> No
     holder = RegistryHolder(write_registry({"servers": {"opsdesk": OPSDESK}}))
     assert holder.current.servers["opsdesk"].is_enabled("restart_service") is False
 
-    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True}}}
+    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True, "owner": "oncall-team"}}}
     write_registry({"servers": {"opsdesk": flipped}})
     assert holder.refresh() is True
     assert holder.current.servers["opsdesk"].is_enabled("restart_service") is True
@@ -168,7 +171,7 @@ def test_a_write_that_completes_in_the_same_tick_as_a_torn_read_is_loaded(regist
     assert holder.refresh() is False
     assert holder.last_error is not None
 
-    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True}}}
+    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True, "owner": "oncall-team"}}}
     registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
     _set_mtime(registry_path, torn_at)
     assert holder.refresh() is True
@@ -241,7 +244,7 @@ def test_ignored_content_under_the_good_mtime_is_read_once_while_an_error_is_pen
     _set_mtime(registry_path, 1_700_000_001_000_000_000)
     assert holder.refresh() is False
     reads = _count_reads(monkeypatch)
-    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True}}}
+    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True, "owner": "oncall-team"}}}
     registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
     _set_mtime(registry_path, good_at)
     for _ in range(5):
@@ -297,7 +300,7 @@ def test_a_same_mtime_change_while_an_error_is_pending_is_still_ignored(registry
     registry_path.write_text("servers: [unclosed\n")
     _set_mtime(registry_path, 1_700_000_001_000_000_000)
     assert holder.refresh() is False
-    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True}}}
+    flipped = {**OPSDESK, "tools": {"restart_service": {"enabled": True, "owner": "oncall-team"}}}
     registry_path.write_text(yaml.safe_dump({"servers": {"opsdesk": flipped}}))
     _set_mtime(registry_path, good_at)
     assert holder.refresh() is False
@@ -355,7 +358,11 @@ def test_live_edits_log_no_restart_warning(
     write_registry: WriteRegistry, caplog: pytest.LogCaptureFixture
 ) -> None:
     holder = RegistryHolder(write_registry({"servers": {"opsdesk": OPSDESK}}))
-    flipped = {**OPSDESK, "owner": "someone-else", "tools": {"restart_service": {"enabled": True}}}
+    flipped = {
+        **OPSDESK,
+        "owner": "someone-else",
+        "tools": {"restart_service": {"enabled": True, "owner": "oncall-team"}},
+    }
     write_registry({"servers": {"opsdesk": flipped}})
     with caplog.at_level(logging.INFO, logger="gateway.registry"):
         assert holder.refresh() is True
@@ -414,7 +421,7 @@ servers:
     owner: oncall-team
     source: {{kind: stdio, command: [opsdesk-server]}}
     tools:
-      muted: &off {{enabled: false}}
+      muted: {{<<: &off {{enabled: false}}, owner: oncall-team}}
       owned_by: &owned {{owner: oncall-team}}
 {tool_body}
 """
@@ -500,7 +507,9 @@ def test_merge_list_still_loads(write_registry: WriteRegistry) -> None:
 
 def test_explicit_key_overrides_merged_one(write_registry: WriteRegistry) -> None:
     # Guards standard YAML semantics: an explicit key beats a merged one, without an error.
-    text = _merge_registry("      restart_service:\n        <<: *off\n        enabled: true")
+    text = _merge_registry(
+        "      restart_service:\n        <<: *off\n        enabled: true\n        owner: oncall-team"
+    )
     policy = load_registry(write_registry(text)).servers["opsdesk"].tools["restart_service"]
     assert policy.enabled is True
 
