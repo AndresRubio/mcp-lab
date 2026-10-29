@@ -109,6 +109,8 @@ revisit. See [`docs/notes/m2a.md`](docs/notes/m2a.md) for the design and its kno
 
 ## Test pyramid
 
+`./scripts/check.sh` runs what CI runs: ruff, ruff format, pyright and the tests under `python -X dev`; extra arguments go to pytest. [`docs/reviewing.md`](docs/reviewing.md) is the procedure for reviewing a branch, with `scripts/review-package.sh` for the diff and `scripts/tests-against-base.sh` to run a branch's tests against the code it changes.
+
 | Layer | Command | What it proves |
 |---|---|---|
 | Contract (in-memory) | `uv run pytest` | every tool/resource/prompt, MRTR rounds, error codes |
