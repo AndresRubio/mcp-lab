@@ -63,6 +63,9 @@ curl -s http://127.0.0.1:8080/healthz          # {"status":"ok","servers":["opsd
 uv run mcp-gateway audit --registry packages/mcp-gateway/registry.yaml
 ```
 
+The demo registry starts OpsDesk with `uv run opsdesk-server`, which works only when `mcp-gateway serve`
+starts inside the repository, where uv finds the workspace from the working directory.
+
 `serve` prints one endpoint per server (`http://127.0.0.1:8080/opsdesk/mcp`, `.../pager/mcp`).
 `audit` connects to each backend and lists the tools the registry does not cover yet:
 
@@ -70,6 +73,10 @@ uv run mcp-gateway audit --registry packages/mcp-gateway/registry.yaml
 opsdesk (owner: oncall-team): pending review: run_diagnostics
 pager (owner: sre): every tool is reviewed
 ```
+
+When the registry lists a tool a backend does not offer, `audit` prints a second line for that
+server, such as `opsdesk (owner: oncall-team): listed but not offered: List_Incidents (enabled), export_audit_log`,
+and exits 1 when any such entry is enabled.
 
 Call it like any MCP server:
 
@@ -109,7 +116,7 @@ revisit. See [`docs/notes/m2a.md`](docs/notes/m2a.md) for the design and its kno
 
 ## Test pyramid
 
-`./scripts/check.sh` runs what CI runs: ruff, ruff format, pyright and the tests under `python -X dev`; extra arguments go to pytest. [`docs/reviewing.md`](docs/reviewing.md) is the procedure for reviewing a branch, with `scripts/review-package.sh` for the diff and `scripts/tests-against-base.sh` to run a branch's tests against the code it changes.
+`./scripts/check.sh` runs ruff, ruff format, pyright and the tests under `python -X dev -X warn_default_encoding`; extra arguments go to pytest. CI runs it in its `python` job and again under an ASCII locale in `ascii-locale`. The `python` job also lints `scripts/*.sh` with shellcheck, and the `protocol` job runs `conformance.sh` and `inspector-smoke.sh`. [`docs/reviewing.md`](docs/reviewing.md) is the procedure for reviewing a branch, with `scripts/review-package.sh` for the diff and `scripts/tests-against-base.sh` to run a branch's tests against the code it changes.
 
 | Layer | Command | What it proves |
 |---|---|---|
@@ -118,5 +125,6 @@ revisit. See [`docs/notes/m2a.md`](docs/notes/m2a.md) for the design and its kno
 | Gateway | `uv run pytest packages/mcp-gateway` | registry, redaction, rate limits, MRTR and progress through the proxy, in-process HTTP, a `serve` subprocess end to end |
 | Conformance | `./scripts/conformance.sh` | official conformance suite (6 applicable 2025-11-25 scenarios; none exist yet for 2026-07-28) |
 | Smoke | `./scripts/inspector-smoke.sh` | MCP Inspector CLI over stdio |
+| Freshness | `bash scripts/freshness.sh` | flags each pin behind its latest release: the spec date, `mcp`, `fastmcp`, the conformance suite and the Inspector (CI runs it monthly) |
 
 Notes for each milestone are in [`docs/notes/`](docs/notes/).
