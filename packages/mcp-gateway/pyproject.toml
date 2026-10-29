@@ -4,9 +4,11 @@ version = "0.1.0"
 description = "An MCP gateway: registry-governed proxy with redaction and per-caller rate limits"
 requires-python = ">=3.13"
 dependencies = [
+    "anyio==4.15.1",
     "fastmcp==4.1.0",
     "httpx2==2.13.1",
     "mcp==2.3.0",
+    "mcp-types==2.3.0",
     "pydantic==2.14.1",
     "pyyaml==6.0.3",
     "starlette==1.8.0",
