@@ -51,7 +51,7 @@ done
 # npm_pin NAME VARIABLE FILE: the version FILE assigns to VARIABLE, compared with npm's latest.
 npm_pin() {
   local pinned latest
-  pinned=$(sed -n "s/^$2=\"\(.*\)\"$/\1/p" "$3")
+  pinned=$(sed -n "s/^$2=\"\(.*\)\"\$/\1/p" "$3")
   [ -n "$pinned" ] || fail "no $2 in $3"
   latest=$(npm view "$1" version) || fail "npm version of $1"
   compare "$1" "$pinned" "$latest"
