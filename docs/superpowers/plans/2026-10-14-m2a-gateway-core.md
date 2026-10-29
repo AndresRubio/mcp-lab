@@ -2785,3 +2785,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 ```
 
 Do not tag and do not push: the controller reviews the branch and tags `m2a`.
+
+## Corrections (2026-10-29)
+
+The architecture summary says the rate limit "counts only the first MRTR round", and the gotcha list says to count only calls without `request_state`; the code does neither. `GatewayPolicyMiddleware.on_call_tool` reserves a slot on every round before forwarding it and hands the slot back only when the backend answers with an `InputRequiredToolResult`, so a confirmation exchange counts once and a replayed `requestState` still counts. `docs/notes/m2a.md`, section "Rate limits and MRTR rounds", explains why and names the tests.
