@@ -1,0 +1,13 @@
+# Monthly update pull requests for the root pyproject.toml and uv.lock, and for the actions the
+# workflows use. scripts/freshness.sh covers the pins Dependabot does not see: the MCP spec date and
+# the npm tools the protocol scripts run.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
