@@ -166,9 +166,14 @@ class RegistryHolder:
     or changing a server's `source`. The servers and sources of the first load are what is mounted.
 
     The mtime is recorded only once a load succeeds. A file read mid-write can be broken and then
-    finish under the same mtime, so a broken file is read again on each refresh; its digest is kept,
-    so the same broken bytes are not parsed or logged twice. While an error is pending, a file whose
-    stat and bytes match the last good load again clears the error without installing anything.
+    finish under the same mtime, so while an error is pending the file is read again whenever its
+    stat (mtime and size) differs from the content last read and not installed; the same stat is
+    not read again, since `refresh()` runs in the event loop on every request. A read that fails
+    to open the file is the exception: it is retried on every request, since the fix (a permission
+    or the file put back) changes neither mtime nor size. The digest of the
+    rejected bytes is kept too, so the same broken bytes are never parsed or logged twice. While an
+    error is pending, a file whose stat and bytes match the last good load again clears the error
+    without installing anything.
     """
 
     def __init__(self, path: Path) -> None:
@@ -185,24 +190,32 @@ class RegistryHolder:
         self.last_error: str | None = None
         self._loaded_digest = hashlib.sha256(raw).digest()  # sha256 of the bytes `current` came from
         self._rejected_digest: bytes | None = None  # sha256 of the file content that last failed to load
+        # (mtime_ns, size) of the content last read and not installed: not read again until it changes.
+        self._rejected_stat: tuple[int, int] | None = None
         self._mounted = {name: entry.source for name, entry in self.current.servers.items()}
 
     def refresh(self) -> bool:
         """Reload if the file changed. Returns True only when a new registry was installed."""
         try:
-            mtime_ns = self.path.stat().st_mtime_ns  # stat first: a write after this is seen later
+            stat = self.path.stat()  # stat first: a write after this is seen later
+            mtime_ns = stat.st_mtime_ns
             if mtime_ns == self._mtime_ns and self.last_error is None:
+                return False
+            if (mtime_ns, stat.st_size) == self._rejected_stat:  # already read, not installed
                 return False
             raw = self.path.read_bytes()
         except OSError as err:
+            self._rejected_stat = None
             self._rejected_digest = None
             return self._reject(str(err))
+        self._rejected_stat = (mtime_ns, stat.st_size)
         digest = hashlib.sha256(raw).digest()
         if mtime_ns == self._mtime_ns:
             # An error is pending, and the stat matches the last good load: if the good bytes are
             # back (`cp -p`, an editor's backup), the running registry is right and the error is stale.
             # Other content under that mtime is ignored, as it is when no error is pending.
             if digest == self._loaded_digest:
+                self._rejected_stat = None
                 self._rejected_digest = None
                 self.last_error = None
                 logger.info("registry %s matches the running registry again", self.path)
@@ -216,6 +229,7 @@ class RegistryHolder:
             return self._reject(str(err))
         self._mtime_ns = mtime_ns
         self._loaded_digest = digest
+        self._rejected_stat = None
         self._rejected_digest = None
         self.current = registry
         self.last_error = None

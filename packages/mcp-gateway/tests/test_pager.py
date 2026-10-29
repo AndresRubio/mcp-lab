@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx2
 import pytest
-from fastmcp import Client
+from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from starlette.routing import Route
 
@@ -137,3 +137,31 @@ async def test_spec_matches_the_routes_and_success_statuses(pager_http: httpx2.A
     assert "200" in SPEC["paths"]["/oncall/{service}"]["get"]["responses"]
     assert "201" in SPEC["paths"]["/pages"]["post"]["responses"]
     assert "200" in SPEC["paths"]["/pages"]["get"]["responses"]
+
+
+async def test_pager_mcp_is_built_the_way_resolve_targets_builds_an_openapi_source(
+    pager_http: httpx2.AsyncClient,
+) -> None:
+    # The tests drive the Pager through `pager_mcp`; `mcp-gateway serve` goes through
+    # `resolve_targets`. Both must produce the same MCP surface, or the tests prove nothing about serve.
+    from gateway.app import resolve_targets
+    from gateway.registry import Registry
+
+    source = {
+        "kind": "openapi",
+        "spec": "gateway.pager:SPEC",
+        "base_url": "http://pager.local",
+        "mcp_names": MCP_NAMES,
+    }
+    registry = Registry.model_validate({"servers": {"pager": {"owner": "t", "source": source}}})
+    targets = resolve_targets(registry)
+    try:
+        served = targets["pager"]
+        assert isinstance(served, FastMCP)
+        async with Client(served) as client:
+            via_serve = [t.model_dump(mode="json") for t in await client.list_tools()]
+        async with Client(pager_mcp(pager_http)) as client:
+            via_tests = [t.model_dump(mode="json") for t in await client.list_tools()]
+    finally:
+        await targets.aclose()
+    assert via_tests == via_serve
