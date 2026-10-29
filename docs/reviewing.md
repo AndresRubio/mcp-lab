@@ -16,7 +16,9 @@ pushes and posts nothing.
 4. Run the new tests against the base: `scripts/tests-against-base.sh BASE HEAD -k "<names>"`.
    A test that proves a fix fails there. One that passes is a drift guard or coverage, and the
    report says which. A collection error names an import the base lacks, which counts as a fail.
-   Done when every new test is classified.
+   The interpreter and the dependencies are the checkout's, so run it from a checkout at HEAD
+   (the script warns otherwise). Tests of a package the base does not have are left out with a
+   warning: they have no old code to run against. Done when every new test is classified.
 5. Verify each candidate finding with a command, a scratch test or a quoted line, and drop what
    cannot be shown. A platform claim names the platform it ran on, or carries the word
    "unverified". Done when every finding that stays has its evidence written next to it.
