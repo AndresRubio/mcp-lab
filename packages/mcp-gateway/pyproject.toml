@@ -5,7 +5,7 @@ description = "An MCP gateway: registry-governed proxy with redaction and per-ca
 requires-python = ">=3.13"
 dependencies = [
     "anyio==4.15.1",
-    "fastmcp==4.1.0",
+    "fastmcp==4.1.4",
     "httpx2==2.16.0",
     "mcp==2.3.0",
     "mcp-types==2.3.0",
