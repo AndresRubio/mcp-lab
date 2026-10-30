@@ -18,7 +18,7 @@ mcp-gateway = { workspace = true }
 [dependency-groups]
 dev = [
     "anyio==4.15.1",
-    "httpx2==2.13.1",
+    "httpx2==2.16.0",
     "hypothesis==6.168.5",
     "pyright==1.1.414",
     "pytest==9.1.1",
