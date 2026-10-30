@@ -3,7 +3,8 @@
 mcp-gateway serve --registry registry.yaml [--host 127.0.0.1] [--port 8080]
 mcp-gateway audit --registry registry.yaml
 
-`audit` exits with status 1 when the registry enables a tool that its backend does not offer.
+`audit` exits with status 1 when the registry enables a tool that its backend does not offer, or
+when a backend could not be reached, so nothing it lists was checked.
 """
 
 import argparse
@@ -40,11 +41,12 @@ async def audit(registry_path: Path) -> bool:
 
     Also print the listed tools the backend does not offer (a stale name, a typo, a tool listed
     before it ships), marking the enabled ones: such a tool goes live unreviewed the moment a
-    backend ships it under that name. Returns True when any such entry is enabled.
+    backend ships it under that name. Returns True when any such entry is enabled, or when a
+    backend was unreachable and its entries could not be checked.
     """
     registry = load_registry(registry_path)
     targets = resolve_targets(registry, spec_dir=registry_path.parent)
-    enabled_but_not_offered = False
+    failed = False
     try:
         for name, target in targets.items():
             entry = registry.servers[name]
@@ -54,6 +56,7 @@ async def audit(registry_path: Path) -> bool:
                     offered = [tool.name for tool in await client.list_tools()]
             except Exception as err:  # one unreachable backend must not hide the others' findings
                 print(f"{label}: unreachable: {err}")
+                failed = True
                 continue
             pending = [tool for tool in offered if tool not in entry.tools]
             if pending:
@@ -64,10 +67,10 @@ async def audit(registry_path: Path) -> bool:
             if stale:
                 marked = [f"{tool} (enabled)" if entry.is_enabled(tool) else tool for tool in stale]
                 print(f"{label}: listed but not offered: {', '.join(marked)}")
-                enabled_but_not_offered |= any(entry.is_enabled(tool) for tool in stale)
+                failed |= any(entry.is_enabled(tool) for tool in stale)
     finally:
         await targets.aclose()
-    return enabled_but_not_offered
+    return failed
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -88,7 +91,8 @@ def main(argv: list[str] | None = None) -> None:
         if args.command == "serve":
             serve(args.registry, args.host, args.port)
         elif anyio.run(audit, args.registry):
-            raise SystemExit(1)  # an enabled tool that no backend offers would go live unreviewed
+            # An enabled tool no backend offers would go live unreviewed, or a backend went unchecked.
+            raise SystemExit(1)
     except (RegistryError, SpecError, BindError) as err:  # operator errors only
         raise SystemExit(f"mcp-gateway: {err}") from err
 

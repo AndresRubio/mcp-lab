@@ -67,10 +67,25 @@ def test_audit_reports_unlisted_backend_tools(
     data = _stdio_registry(registry_data)
     del data["servers"]["opsdesk"]["tools"]["run_diagnostics"]
     data["servers"]["down"] = {"owner": "nobody", "source": {"kind": "http", "url": "http://127.0.0.1:9/mcp"}}
-    main(["audit", "--registry", str(write_registry(data))])
+    with pytest.raises(SystemExit):  # the unreachable backend; see the next test
+        main(["audit", "--registry", str(write_registry(data))])
     lines = capfd.readouterr().out.splitlines()
     assert "opsdesk (owner: oncall-team): pending review: run_diagnostics" in lines
     assert any(re.fullmatch(r"down \(owner: nobody\): unreachable: .+", line) for line in lines)
+
+
+def test_audit_exits_1_when_a_backend_is_unreachable(
+    write_registry: WriteRegistry, capfd: pytest.CaptureFixture[str]
+) -> None:
+    # Exit 0 means every listed entry was checked; an unreachable backend's entries were not.
+    data = {
+        "servers": {"down": {"owner": "nobody", "source": {"kind": "http", "url": "http://127.0.0.1:9/mcp"}}}
+    }
+    with pytest.raises(SystemExit) as exc:
+        main(["audit", "--registry", str(write_registry(data))])
+    assert exc.value.code == 1
+    [line] = capfd.readouterr().out.splitlines()
+    assert re.fullmatch(r"down \(owner: nobody\): unreachable: .+", line)
 
 
 def test_audit_reports_a_stale_disabled_entry_and_exits_0(

@@ -25,8 +25,9 @@ and rate-limits each caller.
   enabled one. A disabled entry of that kind is a cleanup item and the audit exits 0
   (`test_audit_reports_a_stale_disabled_entry_and_exits_0`). An enabled one makes the audit exit 1,
   since the tool would go live unreviewed the moment a backend ships it under that name
-  (`test_audit_reports_a_stale_enabled_entry_and_exits_1`). `serve` does not check this. The demo
-  registry prints its two lines and exits 0 (`test_audit_of_the_demo_registry`).
+  (`test_audit_reports_a_stale_enabled_entry_and_exits_1`). An unreachable backend also makes it exit
+  1, since nothing that server lists was checked (`test_audit_exits_1_when_a_backend_is_unreachable`).
+  The demo registry prints its two lines and exits 0 (`test_audit_of_the_demo_registry`).
 
 ## Disabled by default
 A tool the registry does not list is hidden, and a listed tool is disabled unless it says
@@ -40,7 +41,8 @@ not exist, so a caller cannot probe for it (`test_disabled_tool_is_not_callable`
 restart that unmounts it: its tools, resources, resource templates and prompts all list empty, a
 resource read fails with `Resource not found` and a `prompts/get` with `Unknown prompt`, as they do
 for names that do not exist. Put back in the YAML, the server serves them again
-(`test_server_removed_from_registry_exposes_nothing_until_restart`).
+(`test_server_removed_from_registry_exposes_nothing_until_restart`; OpsDesk has no static resource,
+so `test_server_removed_from_registry_hides_static_resources_too` covers those with its own backend).
 
 **Known gap: the registry governs tools only.** While a server is listed, its resources and prompts
 pass through ungoverned: the registry cannot hide or disable them one by one, and no owner is recorded
@@ -256,8 +258,7 @@ check unless its Host header is loopback. Binding beyond loopback should therefo
   (`test_known_gap_a_stdio_command_runs_in_the_gateway_working_directory`,
   `test_a_relative_spec_path_is_resolved_against_the_registry_directory`). The demo registry's
   `uv run opsdesk-server` therefore works only when `mcp-gateway serve` starts inside the repository,
-  where `uv` finds the workspace from the working directory. Started elsewhere, `audit` reports
-  OpsDesk as unreachable.
+  where `uv` finds the workspace from the working directory.
 - Rate limits trust a self-asserted caller name, and a sealed `requestState` can be replayed within
   its 600 seconds. Both wait for M2b.
 - `GET /healthz` is unauthenticated and lists the server names. M2b should revisit it.

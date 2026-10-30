@@ -131,6 +131,28 @@ async def test_server_removed_from_registry_exposes_nothing_until_restart(
     assert len(prompt.messages) == 1
 
 
+async def test_server_removed_from_registry_hides_static_resources_too(write_registry: WriteRegistry) -> None:
+    # OpsDesk serves only a resource template, so the test above cannot see a static resource leak.
+    backend = FastMCP("static")
+
+    @backend.resource("static://motd")
+    def motd() -> str:
+        return "hello"
+
+    source = {"kind": "stdio", "command": ["x"]}
+    data: dict[str, Any] = {"servers": {"static": {"owner": "t", "source": source}}}
+    holder = RegistryHolder(write_registry(data))
+    server = build_gateway_servers(holder, {"static": backend})["static"]
+    async with Client(server) as client:
+        assert [str(r.uri) for r in await client.list_resources()] == ["static://motd"]
+    write_registry({"servers": {}})
+    assert holder.refresh() is True
+    async with Client(server) as client:
+        assert await client.list_resources() == []
+        with pytest.raises(MCPError, match=r"^Resource not found: 'static://motd'$"):
+            await client.read_resource("static://motd")
+
+
 async def test_mrtr_confirmation_crosses_the_gateway(opsdesk: FastMCP, store: OpsDeskStore) -> None:
     async with Client(opsdesk, elicitation_handler=_confirm) as client:
         result = await client.call_tool("restart_service", {"service": "search"})

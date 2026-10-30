@@ -76,7 +76,8 @@ pager (owner: sre): every tool is reviewed
 
 When the registry lists a tool a backend does not offer, `audit` prints a second line for that
 server, such as `opsdesk (owner: oncall-team): listed but not offered: List_Incidents (enabled), export_audit_log`,
-and exits 1 when any such entry is enabled.
+and exits 1 when any such entry is enabled. It also exits 1 when a backend could not be reached,
+since that server's entries went unchecked.
 
 Call it like any MCP server:
 
