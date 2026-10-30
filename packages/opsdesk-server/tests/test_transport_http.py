@@ -23,11 +23,12 @@ LISTENING = re.compile(r"OpsDesk listening on (http://\S+/mcp)")
 def _http_server(*args: str, timeout: float = 10) -> Iterator[str]:
     """Start `opsdesk --transport http --port 0 [args]` and yield the URL it announces."""
     # stderr goes to a file, not a PIPE: an undrained pipe blocks the server once it fills.
-    with tempfile.TemporaryFile(mode="w+") as log:
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as log:
         proc = subprocess.Popen(
             [sys.executable, "-m", "opsdesk", "--transport", "http", "--port", "0", *args],
             stderr=log,
             text=True,
+            encoding="utf-8",
         )
         try:
             deadline = time.monotonic() + timeout

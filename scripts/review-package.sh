@@ -28,10 +28,16 @@ cd "$(git rev-parse --show-toplevel)"
 git rev-parse --verify --quiet "$base" >/dev/null || { echo "bad BASE: $base" >&2; exit 2; }
 git rev-parse --verify --quiet "$head" >/dev/null || { echo "bad HEAD: $head" >&2; exit 2; }
 
+# Refs that share no history (an orphan branch, a shallow clone cut above the fork point) have no
+# merge base, and the three-dot stat and diff have nothing to start from.
+if ! merge_bases=$(git merge-base --all "$base" "$head"); then
+  echo "no merge base between ${base} and ${head}: they share no history (orphan branch or shallow clone?)" >&2
+  exit 2
+fi
 # With more than one merge base (each side merged the other), the three-dot stat and diff start
 # from whichever base git picks and can show work BASE already has. Git warns on stderr only, so
 # the package carries the warning where a reviewer reads it.
-bases=$(git merge-base --all "$base" "$head" | wc -l | tr -d ' ')
+bases=$(wc -l <<<"$merge_bases" | tr -d ' ')
 
 {
   echo "# Review package: ${base}..${head}"

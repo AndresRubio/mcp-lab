@@ -32,6 +32,7 @@ from opsdesk.data import (
 CACHE_HINTS: dict[CacheableMethod, CacheHint] = {
     "tools/list": CacheHint(ttl_ms=60_000, scope="public"),
     "prompts/list": CacheHint(ttl_ms=60_000, scope="public"),
+    "resources/list": CacheHint(ttl_ms=60_000, scope="public"),
     "resources/templates/list": CacheHint(ttl_ms=60_000, scope="public"),
     "resources/read": CacheHint(ttl_ms=5_000, scope="private"),
 }

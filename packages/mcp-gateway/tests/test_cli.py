@@ -37,7 +37,7 @@ async def _accept(context: ClientRequestContext, params: mt.ElicitRequestParams)
 def _pid_recording_opsdesk(pid_file: Path) -> list[str]:
     """An OpsDesk stdio command that writes its PID first: the transport exposes no public pid."""
     boot = (
-        f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid()))\n"
+        f"import os; open({str(pid_file)!r}, 'w', encoding='utf-8').write(str(os.getpid()))\n"
         "from opsdesk.__main__ import main; main([])"
     )
     return [sys.executable, "-c", boot]
@@ -67,10 +67,54 @@ def test_audit_reports_unlisted_backend_tools(
     data = _stdio_registry(registry_data)
     del data["servers"]["opsdesk"]["tools"]["run_diagnostics"]
     data["servers"]["down"] = {"owner": "nobody", "source": {"kind": "http", "url": "http://127.0.0.1:9/mcp"}}
-    main(["audit", "--registry", str(write_registry(data))])
+    with pytest.raises(SystemExit):  # the unreachable backend; see the next test
+        main(["audit", "--registry", str(write_registry(data))])
     lines = capfd.readouterr().out.splitlines()
     assert "opsdesk (owner: oncall-team): pending review: run_diagnostics" in lines
     assert any(re.fullmatch(r"down \(owner: nobody\): unreachable: .+", line) for line in lines)
+
+
+def test_audit_exits_1_when_a_backend_is_unreachable(
+    write_registry: WriteRegistry, capfd: pytest.CaptureFixture[str]
+) -> None:
+    # Exit 0 means every listed entry was checked; an unreachable backend's entries were not.
+    data = {
+        "servers": {"down": {"owner": "nobody", "source": {"kind": "http", "url": "http://127.0.0.1:9/mcp"}}}
+    }
+    with pytest.raises(SystemExit) as exc:
+        main(["audit", "--registry", str(write_registry(data))])
+    assert exc.value.code == 1
+    [line] = capfd.readouterr().out.splitlines()
+    assert re.fullmatch(r"down \(owner: nobody\): unreachable: .+", line)
+
+
+def test_audit_reports_a_stale_disabled_entry_and_exits_0(
+    write_registry: WriteRegistry, registry_data: dict[str, Any], capfd: pytest.CaptureFixture[str]
+) -> None:
+    data = _stdio_registry(registry_data)
+    data["servers"]["opsdesk"]["tools"]["List_Incidents"] = {"enabled": False, "owner": "oncall-team"}
+    main(["audit", "--registry", str(write_registry(data))])  # returns: exit status 0
+    assert capfd.readouterr().out.splitlines() == [
+        "opsdesk (owner: oncall-team): every tool is reviewed",
+        "opsdesk (owner: oncall-team): listed but not offered: List_Incidents",
+    ]
+
+
+def test_audit_reports_a_stale_enabled_entry_and_exits_1(
+    write_registry: WriteRegistry, registry_data: dict[str, Any], capfd: pytest.CaptureFixture[str]
+) -> None:
+    # An enabled entry for a tool the backend lacks goes live, unreviewed, once a backend ships it.
+    data = _stdio_registry(registry_data)
+    tools = data["servers"]["opsdesk"]["tools"]
+    tools["List_Incidents"] = {"enabled": True, "owner": "oncall-team"}
+    tools["export_audit_log"] = {"enabled": False, "owner": "oncall-team"}
+    with pytest.raises(SystemExit) as exc:
+        main(["audit", "--registry", str(write_registry(data))])
+    assert exc.value.code == 1
+    assert capfd.readouterr().out.splitlines() == [
+        "opsdesk (owner: oncall-team): every tool is reviewed",
+        "opsdesk (owner: oncall-team): listed but not offered: List_Incidents (enabled), export_audit_log",
+    ]
 
 
 @pytest.mark.skipif(shutil.which("uv") is None, reason="the demo registry launches OpsDesk with `uv run`")
@@ -99,7 +143,7 @@ async def test_serve_end_to_end_over_a_stdio_backend(
             tools = {t.name for t in (await client.list_tools()).tools}
             first = await client.call_tool("restart_service", {"service": "search"})
             again = await client.call_tool("get_service_status", {"service": "search"})
-        pid = int(pid_file.read_text())
+        pid = int(pid_file.read_text(encoding="utf-8"))
         assert _alive(pid)
     # `announced` has sent SIGTERM and waited for the gateway: its stdio backend must be gone too.
     deadline = time.monotonic() + 10
@@ -115,7 +159,7 @@ async def test_serve_end_to_end_over_a_stdio_backend(
 
 def test_serve_refuses_an_invalid_registry(tmp_path: Path) -> None:
     path = tmp_path / "registry.yaml"
-    path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}))
+    path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}), encoding="utf-8")
     with pytest.raises(SystemExit, match=r"registry\.yaml"):
         main(["serve", "--registry", str(path), "--port", "0"])
 
@@ -161,7 +205,7 @@ def test_audit_reports_a_bad_openapi_spec_without_a_traceback(write_registry: Wr
 
 def test_audit_refuses_an_invalid_registry(tmp_path: Path) -> None:
     path = tmp_path / "registry.yaml"
-    path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}))
+    path.write_text(yaml.safe_dump({"servers": {"x": {"owner": "t"}}}), encoding="utf-8")
     with pytest.raises(SystemExit, match=r"^mcp-gateway: .*registry\.yaml"):
         main(["audit", "--registry", str(path)])
 
@@ -170,7 +214,7 @@ def _malformed_spec_registry(
     write_registry: WriteRegistry, tmp_path: Path, spec_text: str = '{"openapi": "3.1.0", "paths": 5}'
 ) -> Path:
     spec = tmp_path / "bad.json"
-    spec.write_text(spec_text)
+    spec.write_text(spec_text, encoding="utf-8")
     source = {"kind": "openapi", "spec": str(spec), "base_url": "http://127.0.0.1:9"}
     return write_registry({"servers": {"pager": {"owner": "t", "source": source}}})
 
@@ -227,11 +271,36 @@ async def test_audit_leaves_no_backend_process_behind(
     monkeypatch.setattr("gateway.__main__.resolve_targets", resolve_and_hold)
     # Run in this event loop: tearing a loop down would reap a leaked backend and hide the leak.
     await audit(write_registry(data))
-    pid = int(pid_file.read_text())
+    pid = int(pid_file.read_text(encoding="utf-8"))
     deadline = time.monotonic() + 10
     while _alive(pid) and time.monotonic() < deadline:
         await anyio.sleep(0.05)
     assert not _alive(pid)
+
+
+def test_known_gap_a_stdio_command_runs_in_the_gateway_working_directory(
+    write_registry: WriteRegistry,
+    registry_data: dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    # A relative `spec:` is resolved against the registry's directory; a stdio `command` is not.
+    cwd_file = tmp_path / "cwd"
+    boot = (
+        f"import os; open({str(cwd_file)!r}, 'w', encoding='utf-8').write(os.getcwd())\n"
+        "from opsdesk.__main__ import main; main([])"
+    )
+    data = _stdio_registry(registry_data)
+    data["servers"]["opsdesk"]["source"]["command"] = [sys.executable, "-c", boot]
+    path = write_registry(data)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    main(["audit", "--registry", str(path)])
+    capfd.readouterr()
+    assert path.parent != elsewhere
+    assert Path(cwd_file.read_text(encoding="utf-8")) == elsewhere.resolve()
 
 
 def test_audit_loads_a_spec_relative_to_the_registry(
@@ -243,10 +312,12 @@ def test_audit_loads_a_spec_relative_to_the_registry(
 
     registry_dir = tmp_path / "etc"
     registry_dir.mkdir()
-    (registry_dir / "pager.json").write_text(json.dumps(SPEC))
+    (registry_dir / "pager.json").write_text(json.dumps(SPEC), encoding="utf-8")
     source = {"kind": "openapi", "spec": "pager.json", "base_url": "http://pager.invalid"}
     registry = registry_dir / "registry.yaml"
-    registry.write_text(yaml.safe_dump({"servers": {"pager": {"owner": "t", "source": source}}}))
+    registry.write_text(
+        yaml.safe_dump({"servers": {"pager": {"owner": "t", "source": source}}}), encoding="utf-8"
+    )
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)

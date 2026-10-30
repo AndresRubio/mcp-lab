@@ -2,6 +2,7 @@ import anyio
 import pytest
 from mcp import Client, MCPError
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ResourceError
 from mcp.shared.subscriptions import ResourceUpdated
 from mcp.types import TextResourceContents
 
@@ -33,6 +34,20 @@ async def test_missing_runbook_is_invalid_params_32602(server: MCPServer) -> Non
         with pytest.raises(MCPError) as exc:
             await client.read_resource("runbook://nope")
     assert exc.value.error.code == -32602
+
+
+async def test_generic_resource_error_is_internal_error_32603() -> None:
+    # OpsDesk raises only ResourceNotFoundError, so a bare server pins the SDK's other mapping.
+    probe = MCPServer(name="probe")
+
+    @probe.resource("probe://broken")
+    def broken() -> str:
+        raise ResourceError("backend unavailable")
+
+    async with Client(probe) as client:
+        with pytest.raises(MCPError) as exc:
+            await client.read_resource("probe://broken")
+    assert (exc.value.error.code, exc.value.error.message) == (-32603, "backend unavailable")
 
 
 async def test_update_runbook_notifies_listeners_and_evicts_client_cache(server: MCPServer) -> None:

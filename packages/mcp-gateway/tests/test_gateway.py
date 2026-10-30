@@ -11,6 +11,7 @@ import mcp_types as mt
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from mcp import MCPError
 
 from gateway.app import build_gateway_servers, resolve_targets
 from gateway.registry import RegistryHolder
@@ -99,14 +100,57 @@ async def test_tool_disabled_after_use_is_no_longer_callable(
 async def test_server_removed_from_registry_exposes_nothing_until_restart(
     opsdesk: FastMCP, holder: RegistryHolder, write_registry: WriteRegistry, registry_data: dict[str, Any]
 ) -> None:
-    del registry_data["servers"]["opsdesk"]
+    entry = registry_data["servers"].pop("opsdesk")
     write_registry(registry_data)
     assert holder.refresh() is True
-    assert await _names(opsdesk) == set()
     async with Client(opsdesk) as client:
+        assert await client.list_tools() == []
         result = await client.call_tool_mcp("list_incidents", {})
+        assert await client.list_resources() == []
+        assert await client.list_resource_templates() == []
+        with pytest.raises(MCPError, match=r"^Resource not found: 'runbook://api'$"):
+            await client.read_resource("runbook://api")
+        assert await client.list_prompts() == []
+        with pytest.raises(MCPError, match=r"^Unknown prompt: 'postmortem'$"):
+            await client.get_prompt("postmortem", {"incident_id": "INC-101"})
     assert result.is_error is True
     assert result.content == [mt.TextContent(type="text", text="Unknown tool: 'list_incidents'")]
+
+    # Restored, the server serves its resources and prompts again, ungoverned as before.
+    registry_data["servers"]["opsdesk"] = entry
+    write_registry(registry_data)
+    assert holder.refresh() is True
+    async with Client(opsdesk) as client:
+        assert "list_incidents" in {t.name for t in await client.list_tools()}
+        assert [t.uri_template for t in await client.list_resource_templates()] == ["runbook://{service}"]
+        [content] = await client.read_resource("runbook://api")
+        assert [p.name for p in await client.list_prompts()] == ["postmortem"]
+        prompt = await client.get_prompt("postmortem", {"incident_id": "INC-101"})
+    assert isinstance(content, mt.TextResourceContents)
+    assert content.text.startswith("# api runbook")
+    assert len(prompt.messages) == 1
+
+
+async def test_server_removed_from_registry_hides_static_resources_too(write_registry: WriteRegistry) -> None:
+    # OpsDesk serves only a resource template, so the test above cannot see a static resource leak.
+    backend = FastMCP("static")
+
+    @backend.resource("static://motd")
+    def motd() -> str:
+        return "hello"
+
+    source = {"kind": "stdio", "command": ["x"]}
+    data: dict[str, Any] = {"servers": {"static": {"owner": "t", "source": source}}}
+    holder = RegistryHolder(write_registry(data))
+    server = build_gateway_servers(holder, {"static": backend})["static"]
+    async with Client(server) as client:
+        assert [str(r.uri) for r in await client.list_resources()] == ["static://motd"]
+    write_registry({"servers": {}})
+    assert holder.refresh() is True
+    async with Client(server) as client:
+        assert await client.list_resources() == []
+        with pytest.raises(MCPError, match=r"^Resource not found: 'static://motd'$"):
+            await client.read_resource("static://motd")
 
 
 async def test_mrtr_confirmation_crosses_the_gateway(opsdesk: FastMCP, store: OpsDeskStore) -> None:

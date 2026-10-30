@@ -1629,3 +1629,7 @@ git commit -m "docs: M1 README and 2026-07-28 notes
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
 git tag -a m1 -m "M1: OpsDesk reference MCP server (spec 2026-07-28)"
 ```
+
+## Corrections (2026-10-29)
+
+The error-code table under Global Constraints lists `-32603 | Generic ResourceError` as asserted in tests. No test asserted it when this plan was carried out, and no OpsDesk code path raises a generic `ResourceError`; OpsDesk raises only `ResourceNotFoundError` (-32602). The SDK mapping is now pinned on a bare `MCPServer` by `test_generic_resource_error_is_internal_error_32603`, listed in `docs/notes/m1.md` under "SDK v2 gotchas found while building".

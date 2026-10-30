@@ -53,7 +53,7 @@ async def test_openapi_becomes_an_mcp_server_with_the_registry_names() -> None:
 def test_spec_loads_from_module_attribute_or_json_file(tmp_path: Path) -> None:
     assert load_openapi_spec("gateway.pager:SPEC") is SPEC
     path = tmp_path / "spec.json"
-    path.write_text(json.dumps(SPEC))
+    path.write_text(json.dumps(SPEC), encoding="utf-8")
     assert load_openapi_spec(str(path)) == SPEC
 
 
@@ -73,11 +73,11 @@ def test_bad_spec_references_are_reported(ref: str, message: str) -> None:
 
 def test_invalid_json_and_non_object_json_are_reported(tmp_path: Path) -> None:
     broken = tmp_path / "broken.json"
-    broken.write_text("{not json")
+    broken.write_text("{not json", encoding="utf-8")
     with pytest.raises(ValueError, match=r"broken\.json"):
         load_openapi_spec(str(broken))
     array = tmp_path / "array.json"
-    array.write_text("[]")
+    array.write_text("[]", encoding="utf-8")
     with pytest.raises(ValueError, match="is not an OpenAPI spec"):
         load_openapi_spec(str(array))
 
@@ -96,8 +96,8 @@ def test_a_failed_resolve_spawns_no_backend(tmp_path: Path) -> None:
     """Resolving only builds transports: a stdio command runs when the app does, not before."""
     pid_file = tmp_path / "pid"
     spec = tmp_path / "bad.json"
-    spec.write_text('{"openapi": "3.1.0", "paths": 5}')
-    boot = f"import os; open({str(pid_file)!r}, 'w').write(str(os.getpid()))"
+    spec.write_text('{"openapi": "3.1.0", "paths": 5}', encoding="utf-8")
+    boot = f"import os; open({str(pid_file)!r}, 'w', encoding='utf-8').write(str(os.getpid()))"
     registry = Registry.model_validate(
         {
             "servers": {
@@ -121,7 +121,7 @@ def test_a_relative_spec_path_is_resolved_against_the_registry_directory(
     # anywhere; the working directory must not decide which file is loaded.
     registry_dir = tmp_path / "etc"
     registry_dir.mkdir()
-    (registry_dir / "pager.json").write_text(json.dumps(SPEC))
+    (registry_dir / "pager.json").write_text(json.dumps(SPEC), encoding="utf-8")
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.chdir(elsewhere)
@@ -144,7 +144,9 @@ def test_a_spec_file_is_read_as_utf8_whatever_the_locale_says(tmp_path: Path) ->
         "assert locale.getencoding().lower() not in ('utf-8', 'utf8'), locale.getencoding()\n"
         "print(json.dumps(load_openapi_spec(sys.argv[1])['info']['description']))\n"
     )
-    done = subprocess.run([sys.executable, "-c", code, str(path)], env=env, capture_output=True, text=True)
+    done = subprocess.run(
+        [sys.executable, "-c", code, str(path)], env=env, capture_output=True, text=True, encoding="utf-8"
+    )
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == "Páginas"
 

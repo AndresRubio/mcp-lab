@@ -8,7 +8,8 @@
 # pytest runs there with PYTHONPATH on BASE's src/ directories, ahead of the editable installs in
 # the workspace venv. Subprocesses the tests start inherit PYTHONPATH, so they run BASE's code too,
 # and `uv run` inside a test is pointed at the checkout's venv without a sync, so it does not build
-# a second one from BASE's lock.
+# a second one from BASE's lock. pytest runs under the flags scripts/check.sh uses, `-X dev` and
+# `-X warn_default_encoding`, so a test fails here for the same warnings it fails for there.
 #
 # The interpreter and the dependencies are the checkout's (`uv run python`), so run this from a
 # checkout at HEAD; the script warns when the checkout is elsewhere. A package is left out, with a
@@ -32,7 +33,6 @@ head=$2
 shift 2
 
 cd "$(git rev-parse --show-toplevel)"
-root=$PWD
 git rev-parse --verify --quiet "${base}^{commit}" >/dev/null || { echo "bad BASE: $base" >&2; exit 2; }
 git rev-parse --verify --quiet "${head}^{commit}" >/dev/null || { echo "bad HEAD: $head" >&2; exit 2; }
 if [ "$(git rev-parse "${head}^{commit}")" != "$(git rev-parse HEAD)" ]; then
@@ -87,5 +87,5 @@ echo "tests of ${head} against the source of ${base}" >&2
 cd "$work"
 PYTHONPATH="${pythonpath}${PYTHONPATH:+:${PYTHONPATH}}" \
 UV_PROJECT_ENVIRONMENT="$venv" UV_NO_SYNC=1 \
-  "$python" -X dev -m pytest -p no:cacheprovider -rA --no-header --continue-on-collection-errors \
+  "$python" -X dev -X warn_default_encoding -m pytest -p no:cacheprovider -rA --no-header --continue-on-collection-errors \
   -o "testpaths=${tests[*]}" "$@"

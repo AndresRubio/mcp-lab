@@ -9,7 +9,9 @@ and rate-limits each caller.
 - The control plane is `registry.yaml`, parsed into pydantic models by `gateway.registry`. It records
   who owns each server and tool, which tools are enabled, and each server's rate limit. Unknown keys
   are rejected (`extra="forbid"`), so a typo such as `tols:` fails review instead of silently hiding
-  everything (`test_invalid_entries_are_rejected`).
+  everything (`test_invalid_entries_are_rejected`). `owner` is required on every server and on every
+  listed tool, so a tool entry without one is rejected too (`test_invalid_entries_are_rejected`, case
+  `tool-without-owner`).
 - The data plane is `create_proxy(target)` per backend, plus a `RegistryVisibility` transform and a
   `GatewayPolicyMiddleware`, all mounted in one Starlette app (`gateway.app`). It only reads the
   control plane, through `RegistryHolder.current`.
@@ -18,19 +20,33 @@ and rate-limits each caller.
   code change.
 - `mcp-gateway audit` connects to every backend and prints the tools the registry does not list
   ("pending review"). That is how a newly shipped tool reaches a reviewer
-  (`test_audit_reports_unlisted_backend_tools`).
+  (`test_audit_reports_unlisted_backend_tools`). It also prints, on a second line per server, the
+  listed tools the backend does not offer ("listed but not offered"), with `(enabled)` after each
+  enabled one. A disabled entry of that kind is a cleanup item and the audit exits 0
+  (`test_audit_reports_a_stale_disabled_entry_and_exits_0`). An enabled one makes the audit exit 1,
+  since the tool would go live unreviewed the moment a backend ships it under that name
+  (`test_audit_reports_a_stale_enabled_entry_and_exits_1`). An unreachable backend also makes it exit
+  1, since nothing that server lists was checked (`test_audit_exits_1_when_a_backend_is_unreachable`).
+  The demo registry prints its two lines and exits 0 (`test_audit_of_the_demo_registry`).
 
 ## Disabled by default
 A tool the registry does not list is hidden, and a listed tool is disabled unless it says
-`enabled: true`. Enabling a tool is a reviewed edit to the YAML. A hidden tool is absent from
+`enabled: true`. Enabling a tool is a reviewed edit to the YAML. An entry for a tool the backend does
+not yet offer, such as a typo or a tool listed before it ships, would start switched on if it says
+`enabled: true`, so `mcp-gateway audit` reports it and exits 1
+(`test_audit_reports_a_stale_enabled_entry_and_exits_1`). A hidden tool is absent from
 `tools/list`, and calling it returns the same `Unknown tool: '<name>'` tool error as a tool that does
 not exist, so a caller cannot probe for it (`test_disabled_tool_is_not_callable`,
 `test_unlisted_tool_is_hidden_and_unknown`). A server removed from the YAML exposes nothing until the
-restart that unmounts it (`test_server_removed_from_registry_exposes_nothing_until_restart`).
+restart that unmounts it: its tools, resources, resource templates and prompts all list empty, a
+resource read fails with `Resource not found` and a `prompts/get` with `Unknown prompt`, as they do
+for names that do not exist. Put back in the YAML, the server serves them again
+(`test_server_removed_from_registry_exposes_nothing_until_restart`; OpsDesk has no static resource,
+so `test_server_removed_from_registry_hides_static_resources_too` covers those with its own backend).
 
-**Known gap: the registry governs tools only.** Resources and prompts pass through ungoverned: the
-registry cannot hide or disable them, and no owner is recorded for them. They are redacted like
-everything else (see below), but a reviewer sees nothing about them.
+**Known gap: the registry governs tools only.** While a server is listed, its resources and prompts
+pass through ungoverned: the registry cannot hide or disable them one by one, and no owner is recorded
+for them. They are redacted like everything else (see below), but a reviewer sees nothing about them.
 
 ## Why hot reload goes through a transform
 - `RegistryHolder.refresh()` reloads when the file's `st_mtime_ns` changes. If the new YAML is
@@ -53,8 +69,10 @@ everything else (see below), but a reviewer sees nothing about them.
   anything (`test_restoring_the_good_file_with_its_mtime_clears_the_error`).
 - The middleware calls `refresh()` at the start of every request
   (`test_each_request_refreshes_the_registry`).
-- `RegistryVisibility` reads `holder.current` on every `list_tools` and `get_tool`, so a reload needs
-  nothing rebuilt or mutated (`test_hot_reload_flips_visibility_without_rebuild`).
+- `RegistryVisibility` reads `holder.current` on every list and get of tools, resources, resource
+  templates and prompts, so a reload needs nothing rebuilt or mutated
+  (`test_hot_reload_flips_visibility_without_rebuild`,
+  `test_server_removed_from_registry_exposes_nothing_until_restart`).
 - `FastMCP.enable()` and `disable()` only append `Visibility` transforms, and no API removes one.
   Toggling a tool ten times would stack ten transforms.
 - A transform also hides the tool from `get_tool`, which the call path and any catalog or search
@@ -220,7 +238,7 @@ check unless its Host header is loopback. Binding beyond loopback should therefo
 - A test pins the OpenAPI spec to the routes, so the MCP tools generated from it cannot drift from
   the API (`test_spec_matches_the_routes_and_success_statuses`).
 
-## Known gaps (the first two are pinned by a characterization test)
+## Known gaps (the ones naming a `test_known_gap_` test are pinned by it)
 - `subscriptions/listen` is not proxied. FastMCP 4.1's low-level server registers no handler, so the
   client gets `Method not found`, and OpsDesk's runbook-updated events never reach it
   (`test_known_gap_subscriptions_listen_is_not_proxied`). A workaround exists (register the SDK's
@@ -230,8 +248,17 @@ check unless its Host header is loopback. Binding beyond loopback should therefo
   gateway answers `ttlMs: 0, private` (`test_known_gap_upstream_cache_hints_are_dropped`). The gateway
   could declare its own hint (`create_proxy(..., cache_ttl=60, cache_scope="public")`; that mutation
   turns the test red), but it cannot forward the backend's.
-- The registry governs tools only. Resources and prompts are ungoverned.
+- The registry governs tools only. Resources and prompts of a listed server are ungoverned.
 - stdio backends share one process across every caller (see MRTR above).
+- Rate limits cover tool calls only. Resource reads and prompt gets are not counted and not limited,
+  even for a caller already over the limit
+  (`test_known_gap_resource_reads_and_prompt_gets_are_not_rate_limited`).
+- A `stdio` source's `command` runs in the gateway's working directory, while a relative `spec:` path
+  is resolved against the registry's directory
+  (`test_known_gap_a_stdio_command_runs_in_the_gateway_working_directory`,
+  `test_a_relative_spec_path_is_resolved_against_the_registry_directory`). The demo registry's
+  `uv run opsdesk-server` therefore works only when `mcp-gateway serve` starts inside the repository,
+  where `uv` finds the workspace from the working directory.
 - Rate limits trust a self-asserted caller name, and a sealed `requestState` can be replayed within
   its 600 seconds. Both wait for M2b.
 - `GET /healthz` is unauthenticated and lists the server names. M2b should revisit it.
